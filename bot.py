@@ -7,17 +7,28 @@ import logging
 from typing import Any, Awaitable, Callable
 
 import aiohttp
+import aiosqlite
 from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import TelegramObject
 
 import database
-from config import BOT_TOKEN, FACEIT_API_KEY
-from faceit_api import FaceitAPI
+from cache import TTLCache
+from config import (
+    BOT_TOKEN,
+    DB_PATH,
+    FACEIT_API_KEY,
+    MAX_CACHE_SIZE,
+    WATCH_POLL_INTERVAL,
+)
+from faceit_api import FaceitAPI, FaceitAPIError, parse_match_stats_row
+from fsm_storage import SQLiteFSMStorage
 from handlers import setup_routers
 from middlewares.db_middleware import DbMiddleware
+
+logger = logging.getLogger(__name__)
 
 
 class FaceitInjectMiddleware(BaseMiddleware):
@@ -36,6 +47,90 @@ class FaceitInjectMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+# ---------------------------------------------------------------------------
+# Background watch loop
+# ---------------------------------------------------------------------------
+
+async def _check_all_watchers(bot: Bot, faceit: FaceitAPI) -> None:
+    """Check every watching user for a new match and notify them."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        users = await database.get_watching_users(db)
+
+    for user in users:
+        tid = user["telegram_id"]
+        pid = user["faceit_player_id"]
+        last_mid = user.get("last_match_id")
+
+        try:
+            raw = await faceit.get_player_match_stats(pid, limit=1, offset=0)
+        except FaceitAPIError:
+            continue
+
+        items = (raw or {}).get("items") or []
+        if not items or not isinstance(items[0], dict):
+            continue
+
+        stats = items[0].get("stats")
+        if not isinstance(stats, dict):
+            continue
+
+        row = parse_match_stats_row(stats)
+        mid = row.get("match_id")
+        if not mid:
+            continue
+
+        if last_mid is None:
+            # First poll — set baseline without notifying
+            async with aiosqlite.connect(DB_PATH) as db:
+                await database.update_last_match_id(db, tid, mid)
+            continue
+
+        if mid == last_mid:
+            continue  # No new match
+
+        # ── New match detected ──────────────────────────────────────────
+        async with aiosqlite.connect(DB_PATH) as db:
+            await database.update_last_match_id(db, tid, mid)
+
+        wl = "✅ Win" if row["won"] is True else ("❌ Loss" if row["won"] is False else "Match ended")
+        map_name = row.get("map") or "—"
+        kd_val = row.get("kd")
+        kd_s = f"{kd_val:.2f}" if kd_val is not None else "—"
+
+        msg = (
+            f"🔔 <b>New match!</b>\n"
+            f"{wl} · <b>{map_name}</b>\n"
+            f"K/D <code>{kd_s}</code>"
+        )
+        try:
+            await bot.send_message(tid, msg, parse_mode="HTML")
+        except TelegramForbiddenError:
+            logger.info("User %s blocked the bot — disabling watch.", tid)
+            async with aiosqlite.connect(DB_PATH) as db:
+                await database.set_watching(db, tid, False)
+        except Exception as exc:
+            logger.warning("Failed to notify user %s: %s", tid, exc)
+
+
+async def watch_loop(bot: Bot, faceit: FaceitAPI) -> None:
+    """Periodic background task — polls for new matches every WATCH_POLL_INTERVAL seconds."""
+    logger.info("Watch loop started (interval=%ds).", WATCH_POLL_INTERVAL)
+    while True:
+        try:
+            await asyncio.sleep(WATCH_POLL_INTERVAL)
+        except asyncio.CancelledError:
+            logger.info("Watch loop cancelled.")
+            return
+        try:
+            await _check_all_watchers(bot, faceit)
+        except Exception as exc:
+            logger.error("Watch loop iteration failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -46,18 +141,38 @@ async def main() -> None:
 
     await database.init_db()
 
+    # FSM in SQLite so /register confirmation survives restarts (see fsm_storage.py).
+    storage = SQLiteFSMStorage(DB_PATH)
+
     async with aiohttp.ClientSession() as http:
-        faceit = FaceitAPI(http, FACEIT_API_KEY)
+        faceit = FaceitAPI(http, FACEIT_API_KEY, cache=TTLCache(maxsize=MAX_CACHE_SIZE))
         bot = Bot(
             token=BOT_TOKEN,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
-        dp = Dispatcher(storage=MemoryStorage())
+        dp = Dispatcher(storage=storage)
         dp.update.middleware(FaceitInjectMiddleware(faceit))
         dp.update.middleware(DbMiddleware())
         dp.include_router(setup_routers())
-        await dp.start_polling(bot)
+
+        watch_task = asyncio.create_task(watch_loop(bot, faceit))
+        try:
+            # handle_signals=True (default): SIGINT/SIGTERM stop polling gracefully on Unix.
+            # Windows: Ctrl+C may raise KeyboardInterrupt in asyncio.run; finally still runs.
+            await dp.start_polling(bot, handle_signals=True, close_bot_session=True)
+        finally:
+            watch_task.cancel()
+            try:
+                await watch_task
+            except asyncio.CancelledError:
+                pass
+            await storage.close()
+            await bot.session.close()
+            logger.info("Bot shut down cleanly.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

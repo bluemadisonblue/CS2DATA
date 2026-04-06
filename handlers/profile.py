@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message, URLInputFile
 
+import time
+
 import database as dbmod
-from config import level_tier_emoji
+from config import COOLDOWN_SEC, level_tier_emoji
 from faceit_api import (
     FaceitAPIError,
     FaceitNotFoundError,
@@ -17,13 +21,25 @@ from faceit_api import (
     extract_cs2_game,
 )
 from formatting import flag_emoji
-from keyboards.inline import player_links_kb, with_navigation
+from keyboards.inline import ctx_profile_kb, player_links_kb, with_navigation
 from ui_text import bold, code, esc, section, sep
 
 router = Router(name="profile")
 
-# Telegram photo caption limit (characters)
+logger = logging.getLogger(__name__)
+
 _CAPTION_MAX = 1024
+_last: dict[int, float] = {}
+
+
+async def _cooldown(user_id: int) -> str | None:
+    now = time.monotonic()
+    prev = _last.get(user_id)
+    if prev is not None and (now - prev) < COOLDOWN_SEC:
+        left = COOLDOWN_SEC - (now - prev)
+        return f"Wait ~{left:.0f}s before refreshing."
+    _last[user_id] = now
+    return None
 
 
 async def answer_profile_card(
@@ -46,6 +62,9 @@ async def answer_profile_card(
 
     pid = u["faceit_player_id"]
 
+    if message.bot:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
     try:
         p = await faceit.get_player_by_id(pid)
     except FaceitNotFoundError:
@@ -57,21 +76,21 @@ async def answer_profile_card(
         return
     except FaceitUnavailableError:
         await message.answer(
-            bold("FACEIT is temporarily unavailable."),
+            bold("FACEIT is temporarily unavailable.") + "\nTry again in a moment.",
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
         return
     except FaceitRateLimitError:
         await message.answer(
-            bold("FACEIT rate limit."),
+            bold("FACEIT rate limit.") + " Try again shortly.",
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
         return
     except FaceitAPIError:
         await message.answer(
-            bold("FACEIT error."),
+            bold("FACEIT error.") + " Try again later.",
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
@@ -105,7 +124,7 @@ async def answer_profile_card(
 
     detail = "\n".join(lines)
     avatar = p.get("avatar")
-    markup = with_navigation(url_kb)
+    markup = ctx_profile_kb(url_kb)
 
     if avatar and str(avatar).startswith("http") and len(detail) <= _CAPTION_MAX:
         try:
@@ -116,8 +135,12 @@ async def answer_profile_card(
                 reply_markup=markup,
             )
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Profile photo send failed (%s); falling back to text.",
+                exc,
+                exc_info=True,
+            )
 
     # No avatar, photo failed, or caption too long for one media message
     await message.answer(detail, parse_mode=ParseMode.HTML, reply_markup=markup)
@@ -125,6 +148,9 @@ async def answer_profile_card(
 
 @router.message(Command("profile"))
 async def cmd_profile(message: Message, db, faceit) -> None:
+    if msg := await _cooldown(message.from_user.id):
+        await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
+        return
     await answer_profile_card(message, db, faceit)
 
 
@@ -132,6 +158,9 @@ async def cmd_profile(message: Message, db, faceit) -> None:
 async def cb_nav_profile(callback: CallbackQuery, db, faceit) -> None:
     if not callback.message:
         await callback.answer()
+        return
+    if msg := await _cooldown(callback.from_user.id):
+        await callback.answer(msg[:180], show_alert=True)
         return
     await callback.answer()
     await answer_profile_card(

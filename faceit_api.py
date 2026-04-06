@@ -1,15 +1,41 @@
-"""Async FACEIT Data API v4 client (aiohttp)."""
+"""Async FACEIT Data API v4 client — with TTL cache, HTTP timeout, and retry."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from config import FACEIT_BASE_URL, GAME_ID
+from config import (
+    FACEIT_BASE_URL,
+    FACEIT_RETRY_BASE_DELAY_SEC,
+    FACEIT_RETRY_EXTRA_ATTEMPTS,
+    FACEIT_RETRY_MAX_DELAY_SEC,
+    GAME_ID,
+    HTTP_TIMEOUT_SEC,
+)
+
+if TYPE_CHECKING:
+    from cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+# Cache TTLs (seconds)
+_TTL_PLAYER = 60.0          # profile + ELO change after each match
+_TTL_NICKNAME = 120.0       # nickname→id rarely changes
+_TTL_LIFETIME = 120.0       # aggregate stats change slowly
+_TTL_MATCH_STATS = 60.0     # recent match list
+_TTL_MATCH_META = 600.0     # finished match metadata never changes
+
+_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SEC)
+
+
+def _backoff_seconds(attempt_index: int) -> float:
+    """Exponential delay capped at FACEIT_RETRY_MAX_DELAY_SEC."""
+    raw = FACEIT_RETRY_BASE_DELAY_SEC * (2**attempt_index)
+    return min(FACEIT_RETRY_MAX_DELAY_SEC, raw)
 
 
 class FaceitAPIError(Exception):
@@ -110,60 +136,135 @@ def extract_cs2_game(player: dict[str, Any]) -> dict[str, Any] | None:
 
 
 class FaceitAPI:
-    def __init__(self, session: aiohttp.ClientSession, api_key: str) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        api_key: str,
+        cache: "TTLCache | None" = None,
+    ) -> None:
         self._session = session
         self._headers = {"Authorization": f"Bearer {api_key}"}
+        self._cache = cache
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _do_request(self, method: str, url: str, **kwargs: Any) -> Any:
+        """Single HTTP attempt — raises typed errors on failure."""
+        async with self._session.request(
+            method, url, headers=self._headers, timeout=_HTTP_TIMEOUT, **kwargs
+        ) as resp:
+            if resp.status == 404:
+                raise FaceitNotFoundError("Not found")
+            if resp.status == 429:
+                raise FaceitRateLimitError("Rate limited")
+            if resp.status >= 500 or resp.status == 503:
+                raise FaceitUnavailableError(f"Server error {resp.status}")
+            if resp.status >= 400:
+                text = await resp.text()
+                logger.warning("FACEIT error %s: %s", resp.status, text[:200])
+                raise FaceitAPIError(f"API error {resp.status}")
+            return await resp.json()
 
     async def _request_json(self, method: str, path: str, **kwargs: Any) -> Any:
+        """GET with automatic retry on 429 / 5xx / timeout."""
         url = f"{FACEIT_BASE_URL}{path}"
-        try:
-            async with self._session.request(
-                method, url, headers=self._headers, **kwargs
-            ) as resp:
-                if resp.status == 404:
-                    raise FaceitNotFoundError("Not found")
-                if resp.status == 429:
-                    raise FaceitRateLimitError("Rate limited")
-                if resp.status >= 500 or resp.status == 503:
-                    raise FaceitUnavailableError("Server error")
-                if resp.status >= 400:
-                    text = await resp.text()
-                    logger.warning("FACEIT error %s: %s", resp.status, text[:200])
-                    raise FaceitAPIError(f"API error {resp.status}")
-                return await resp.json()
-        except aiohttp.ClientError as e:
-            raise FaceitUnavailableError(str(e)) from e
+        last_exc: Exception = FaceitAPIError("unknown")
+        max_attempt = FACEIT_RETRY_EXTRA_ATTEMPTS
+
+        for attempt in range(max_attempt + 1):
+            try:
+                return await self._do_request(method, url, **kwargs)
+            except FaceitRateLimitError as exc:
+                last_exc = exc
+                if attempt < max_attempt:
+                    delay = _backoff_seconds(attempt)
+                    logger.info(
+                        "FACEIT rate-limited; sleep %.1fs (attempt %s/%s)",
+                        delay,
+                        attempt + 2,
+                        max_attempt + 1,
+                    )
+                    await asyncio.sleep(delay)
+            except FaceitUnavailableError as exc:
+                last_exc = exc
+                if attempt < max_attempt:
+                    delay = _backoff_seconds(attempt)
+                    logger.info(
+                        "FACEIT unavailable (%s); retry in %.1fs…",
+                        exc,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+            except aiohttp.ServerTimeoutError:
+                last_exc = FaceitUnavailableError(f"Request timed out after {HTTP_TIMEOUT_SEC}s")
+                if attempt < max_attempt:
+                    delay = _backoff_seconds(attempt)
+                    logger.info("FACEIT request timed out; retry in %.1fs…", delay)
+                    await asyncio.sleep(delay)
+            except aiohttp.ClientError as exc:
+                raise FaceitUnavailableError(str(exc)) from exc
+            except (FaceitNotFoundError, FaceitAPIError):
+                raise  # never retry client errors
+
+        raise last_exc
+
+    async def _cached_get(self, key: str, ttl: float, path: str, **kwargs: Any) -> Any:
+        """GET with optional cache lookup/store around the real request."""
+        if self._cache is not None:
+            hit = self._cache.get(key, ttl)
+            if hit is not None:
+                logger.debug("cache hit: %s", key)
+                return hit
+        result = await self._request_json("GET", path, **kwargs)
+        if self._cache is not None:
+            self._cache.set(key, result)
+        return result
+
+    # ------------------------------------------------------------------
+    # Public API methods
+    # ------------------------------------------------------------------
 
     async def get_player_by_nickname(self, nickname: str) -> dict[str, Any]:
+        key = f"nick:{nickname.lower()}"
         params = {"nickname": nickname, "game": GAME_ID}
-        return await self._request_json("GET", "/players", params=params)
+        return await self._cached_get(key, _TTL_NICKNAME, "/players", params=params)
 
     async def get_player_by_id(self, player_id: str) -> dict[str, Any]:
-        return await self._request_json("GET", f"/players/{player_id}")
+        key = f"player:{player_id}"
+        return await self._cached_get(key, _TTL_PLAYER, f"/players/{player_id}")
 
     async def get_player_stats_lifetime(self, player_id: str) -> dict[str, Any]:
-        return await self._request_json("GET", f"/players/{player_id}/stats/{GAME_ID}")
+        key = f"lifetime:{player_id}"
+        return await self._cached_get(
+            key, _TTL_LIFETIME, f"/players/{player_id}/stats/{GAME_ID}"
+        )
 
     async def get_player_match_stats(
         self, player_id: str, limit: int = 10, offset: int = 0
     ) -> dict[str, Any]:
         """Per-match rows with stats (K/D, map, etc.) — games/{game}/stats."""
+        key = f"match_stats:{player_id}:{limit}:{offset}"
         path = f"/players/{player_id}/games/{GAME_ID}/stats"
         params: dict[str, Any] = {"limit": limit, "offset": offset}
-        return await self._request_json("GET", path, params=params)
+        return await self._cached_get(key, _TTL_MATCH_STATS, path, params=params)
 
     async def get_player_history(self, player_id: str, limit: int = 10) -> dict[str, Any]:
+        key = f"history:{player_id}:{limit}"
         params = {"game": GAME_ID, "limit": limit, "offset": 0}
-        return await self._request_json(
-            "GET", f"/players/{player_id}/history", params=params
+        return await self._cached_get(
+            key, _TTL_MATCH_STATS, f"/players/{player_id}/history", params=params
         )
 
     async def get_match_stats(self, match_id: str) -> dict[str, Any]:
-        return await self._request_json("GET", f"/matches/{match_id}/stats")
+        key = f"match_stats_detail:{match_id}"
+        return await self._cached_get(key, _TTL_MATCH_META, f"/matches/{match_id}/stats")
 
     async def get_match(self, match_id: str) -> dict[str, Any]:
         """Match metadata: competition, status, teams, results, region, urls."""
-        return await self._request_json("GET", f"/matches/{match_id}")
+        key = f"match_meta:{match_id}"
+        return await self._cached_get(key, _TTL_MATCH_META, f"/matches/{match_id}")
 
 
 def parse_match_stats_row(stats: dict[str, Any]) -> dict[str, Any]:
@@ -212,6 +313,32 @@ def _infer_win(result: Any) -> bool | None:
     return None
 
 
+def current_win_streak(items: list[dict[str, Any]]) -> tuple[bool, int] | None:
+    """Return (is_win, streak_length) for the current consecutive run, or None."""
+    streak_type: bool | None = None
+    count = 0
+    for it in items:
+        if not isinstance(it, dict):
+            break
+        stats = it.get("stats")
+        if not isinstance(stats, dict):
+            break
+        row = parse_match_stats_row(stats)
+        won = row.get("won")
+        if won is None:
+            break
+        if streak_type is None:
+            streak_type = won
+            count = 1
+        elif won == streak_type:
+            count += 1
+        else:
+            break
+    if streak_type is None:
+        return None
+    return streak_type, count
+
+
 def aggregate_match_scoreboard(match_stats: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Sum player stats across all rounds in /matches/{id}/stats.
@@ -219,7 +346,6 @@ def aggregate_match_scoreboard(match_stats: dict[str, Any]) -> list[dict[str, An
     """
     rounds = match_stats.get("rounds") or []
     if not rounds and match_stats.get("teams"):
-        # Rare shape: teams at root instead of rounds[]
         rounds = [{"teams": match_stats["teams"]}]
     acc: dict[str, dict[str, Any]] = {}
 
@@ -268,9 +394,7 @@ def aggregate_match_scoreboard(match_stats: dict[str, Any]) -> list[dict[str, An
     for row in acc.values():
         d = row["deaths"] or 1.0
         kd = row["kills"] / d
-        hs_pct = (
-            row["hs_sum"] / row["hs_count"] if row["hs_count"] else None
-        )
+        hs_pct = row["hs_sum"] / row["hs_count"] if row["hs_count"] else None
         rows.append(
             {
                 "team_id": row["team_id"],
@@ -283,7 +407,6 @@ def aggregate_match_scoreboard(match_stats: dict[str, Any]) -> list[dict[str, An
                 "hs_pct": hs_pct,
             }
         )
-    # Stable sort: by team then K/D
     rows.sort(key=lambda r: (r["team_id"], -r["kd"]))
     return rows
 

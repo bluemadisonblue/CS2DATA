@@ -1,35 +1,39 @@
-"""Commands: /stats, /matches, /match + nav button shortcuts."""
+"""Commands: /stats [nickname], /matches, /match + nav button shortcuts."""
 
 from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import re
 import time
 from datetime import datetime, timezone
 
 from aiogram import F, Router
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
 import database as dbmod
-from config import level_tier_emoji
+from config import COOLDOWN_SEC, MATCHES_PAGE_SIZE
 from faceit_api import (
     FaceitAPIError,
     FaceitNotFoundError,
     FaceitRateLimitError,
     FaceitUnavailableError,
     aggregate_match_scoreboard,
-    extract_cs2_game,
     group_rows_by_team,
-    parse_lifetime_stats,
     parse_match_stats_row,
 )
 from formatting import flag_emoji, pick_history_meta, recent_form_badge
+from stats_format import fetch_stats_bundle, format_stats_dashboard_html
 from keyboards.inline import (
+    ctx_matches_kb,
+    ctx_scoreboard_kb,
+    ctx_stats_kb,
     match_boards_kb,
     match_faceit_kb,
+    matches_pagination_kb,
     player_links_kb,
     with_match_boards_and_nav,
     with_navigation,
@@ -38,7 +42,8 @@ from ui_text import bold, code, esc, italic, section, sep
 
 router = Router(name="stats")
 
-COOLDOWN_SEC = 10.0
+logger = logging.getLogger(__name__)
+
 _last_heavy: dict[int, float] = {}
 
 
@@ -52,29 +57,7 @@ async def _cooldown_block(user_id: int) -> str | None:
     return None
 
 
-def _fmt_ts(val) -> str:
-    if val is None:
-        return "—"
-    if isinstance(val, str):
-        try:
-            dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        except ValueError:
-            return val[:48]
-    try:
-        ts = float(val)
-        if ts > 1e12:
-            ts /= 1000.0
-        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-        return dt.strftime("%Y-%m-%d %H:%M UTC")
-    except (TypeError, ValueError, OSError):
-        return str(val)[:48]
-
-
 def _fmt_ts_short(val) -> str:
-    """Compact UTC date for match tables (e.g. 06 Apr)."""
     if val is None:
         return "—"
     dt: datetime | None = None
@@ -97,25 +80,7 @@ def _fmt_ts_short(val) -> str:
     return dt.astimezone(timezone.utc).strftime("%d %b")
 
 
-def _fmt_opt(v: float | None, fmt: str, fallback: str = "—") -> str:
-    if v is None:
-        return fallback
-    try:
-        return format(float(v), fmt)
-    except (TypeError, ValueError):
-        return fallback
-
-
-async def _need_user(
-    message: Message,
-    db,
-    *,
-    actor_telegram_id: int | None = None,
-):
-    """
-    actor_telegram_id: use for callback flows. Bot-sent messages have
-    message.from_user = the bot; the clicker is callback.from_user.
-    """
+async def _need_user(message: Message, db, *, actor_telegram_id: int | None = None):
     uid = actor_telegram_id if actor_telegram_id is not None else message.from_user.id
     u = await dbmod.get_user(db, uid)
     if not u:
@@ -128,24 +93,6 @@ async def _need_user(
     return u
 
 
-def _split_message_lines(lines: list[str], max_len: int = 3900) -> list[str]:
-    chunks: list[str] = []
-    buf: list[str] = []
-    n = 0
-    for line in lines:
-        add = len(line) + 1
-        if n + add > max_len and buf:
-            chunks.append("\n".join(buf))
-            buf = [line]
-            n = add
-        else:
-            buf.append(line)
-            n += add
-    if buf:
-        chunks.append("\n".join(buf))
-    return chunks
-
-
 async def send_match_scoreboard(
     message: Message,
     db,
@@ -153,7 +100,6 @@ async def send_match_scoreboard(
     match_id: str,
     actor_telegram_id: int,
 ) -> None:
-    """Fetch /matches/{id} and /stats; send formatted scoreboard (HTML)."""
     user = await dbmod.get_user(db, actor_telegram_id)
     if not user:
         await message.answer(
@@ -167,6 +113,11 @@ async def send_match_scoreboard(
     my_pid = user["faceit_player_id"]
     mid = match_id.strip()
 
+    if message.bot:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
+    loading = await message.answer("⏳ Loading scoreboard…")
+
     meta: dict = {}
     try:
         meta = await faceit.get_match(mid)
@@ -176,49 +127,30 @@ async def send_match_scoreboard(
     try:
         ms = await faceit.get_match_stats(mid)
     except FaceitNotFoundError:
+        await loading.delete()
         await message.answer(
-            bold("Match not found."),
+            f"{bold('Match not found.')}\n"
+            f"{italic('Check the match ID or use /matches to browse your history.')}",
             parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
+            reply_markup=ctx_scoreboard_kb(),
         )
         return
-    except FaceitUnavailableError:
-        await message.answer(
-            bold("FACEIT is temporarily unavailable."),
-            parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
-        )
+    except (FaceitUnavailableError, FaceitRateLimitError, FaceitAPIError) as exc:
+        await loading.delete()
+        msg = bold("FACEIT rate limit.") if isinstance(exc, FaceitRateLimitError) else bold("FACEIT is temporarily unavailable.")
+        await message.answer(msg + " Try again shortly.", parse_mode=ParseMode.HTML, reply_markup=ctx_scoreboard_kb())
         return
-    except FaceitRateLimitError:
-        await message.answer(
-            bold("FACEIT rate limit."),
-            parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
-        )
-        return
-    except FaceitAPIError:
-        await message.answer(
-            bold("FACEIT error."),
-            parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
-        )
-        return
+
+    await loading.delete()
 
     rows = aggregate_match_scoreboard(ms)
     if not rows:
-        await message.answer(
-            bold("No scoreboard data for this match."),
-            parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
-        )
+        await message.answer(bold("No scoreboard data for this match."), parse_mode=ParseMode.HTML, reply_markup=ctx_scoreboard_kb())
         return
 
     team_a, team_b = group_rows_by_team(rows)
 
-    header: list[str] = [
-        section("🧾", "Match scoreboard"),
-        code(mid),
-    ]
+    header: list[str] = [section("🧾", "Match scoreboard"), code(mid)]
     if meta:
         comp = meta.get("competition_name")
         reg = meta.get("region")
@@ -247,31 +179,29 @@ async def send_match_scoreboard(
         hs = r["hs_pct"]
         hs_s = f"{hs:.0f}%" if hs is not None else "—"
         mark = "👉 " if r["player_id"] == my_pid else "   "
-        nick_esc = esc(r["nickname"])
         return (
-            f"{mark}<b>{nick_esc}</b>  K {code(str(int(r['kills'])))}  "
+            f"{mark}<b>{esc(r['nickname'])}</b>  K {code(str(int(r['kills'])))}  "
             f"D {code(str(int(r['deaths'])))}  A {code(str(int(r['assists'])))}  "
             f"HS {code(hs_s)}"
         )
 
-    chunks_body: list[str] = header + ["", section("👥", "Rosters"), ""]
+    body: list[str] = header + ["", section("👥", "Rosters"), ""]
     if team_a:
-        chunks_body.append(bold("Team A"))
+        body.append(bold("Team A"))
         for r in team_a:
-            chunks_body.append(fmt_row(r))
+            body.append(fmt_row(r))
     if team_b:
-        chunks_body.append("")
-        chunks_body.append(bold("Team B"))
+        body.append("")
+        body.append(bold("Team B"))
         for r in team_b:
-            chunks_body.append(fmt_row(r))
+            body.append(fmt_row(r))
     if not team_b and team_a:
-        chunks_body.append(italic("Only one faction in payload (hub/scrim or partial data)."))
+        body.append(italic("Only one faction in payload (hub/scrim or partial data)."))
 
-    text = "\n".join(chunks_body)
     await message.answer(
-        text,
+        "\n".join(body),
         parse_mode=ParseMode.HTML,
-        reply_markup=with_navigation(match_faceit_kb(meta.get("faceit_url"))),
+        reply_markup=ctx_scoreboard_kb(match_faceit_kb(meta.get("faceit_url"))),
     )
 
 
@@ -281,28 +211,51 @@ async def answer_stats_dashboard(
     faceit,
     *,
     actor_telegram_id: int | None = None,
+    lookup_nickname: str | None = None,
 ) -> None:
-    user = await _need_user(message, db, actor_telegram_id=actor_telegram_id)
-    if not user:
-        return
+    """Show a full CS2 stats dashboard.
 
-    pid = user["faceit_player_id"]
-    nick = user["faceit_nickname"]
+    If *lookup_nickname* is given, look up that player (no registration needed).
+    Otherwise show the calling user's own linked account.
+    """
+    uid = actor_telegram_id if actor_telegram_id is not None else message.from_user.id
+
+    if lookup_nickname:
+        own_account = None
+        loading_text = f"⏳ Fetching stats for {html.escape(lookup_nickname)}…"
+    else:
+        own_account = await _need_user(message, db, actor_telegram_id=uid)
+        if not own_account:
+            return
+        loading_text = "⏳ Fetching your stats…"
+
+    if message.bot:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
+    loading = await message.answer(loading_text, parse_mode=ParseMode.HTML)
 
     try:
-        p, st, recent_raw = await asyncio.gather(
-            faceit.get_player_by_id(pid),
-            faceit.get_player_stats_lifetime(pid),
-            faceit.get_player_match_stats(pid, limit=12, offset=0),
-        )
+        if lookup_nickname:
+            bundle = await fetch_stats_bundle(faceit, nickname=lookup_nickname)
+        else:
+            bundle = await fetch_stats_bundle(
+                faceit, player_id=own_account["faceit_player_id"]
+            )
     except FaceitNotFoundError:
+        await loading.delete()
+        hint = (
+            f"\n{italic(f'No FACEIT profile found for \"{html.escape(lookup_nickname)}\". Check the spelling.')}"
+            if lookup_nickname
+            else ""
+        )
         await message.answer(
-            bold("Player not found."),
+            bold("Player not found.") + hint,
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
         return
     except FaceitUnavailableError:
+        await loading.delete()
         await message.answer(
             bold("FACEIT is temporarily unavailable.") + "\nTry again in a moment.",
             parse_mode=ParseMode.HTML,
@@ -310,6 +263,7 @@ async def answer_stats_dashboard(
         )
         return
     except FaceitRateLimitError:
+        await loading.delete()
         await message.answer(
             bold("FACEIT rate limit.") + " Try again shortly.",
             parse_mode=ParseMode.HTML,
@@ -317,6 +271,7 @@ async def answer_stats_dashboard(
         )
         return
     except FaceitAPIError:
+        await loading.delete()
         await message.answer(
             bold("FACEIT error.") + " Try again later.",
             parse_mode=ParseMode.HTML,
@@ -324,76 +279,21 @@ async def answer_stats_dashboard(
         )
         return
 
-    g = extract_cs2_game(p) or {}
-    elo = int(g.get("faceit_elo") or 0)
-    level = int(g.get("skill_level") or 0)
-    tier = level_tier_emoji(level) if level else "❔"
-    region = str(g.get("region") or "—")
-    country = (p.get("country") or "").upper()
-    flg = flag_emoji(country)
+    await loading.delete()
 
-    life = (st.get("lifetime") or {}) if isinstance(st, dict) else {}
-    if not isinstance(life, dict):
-        life = {}
-    parsed = parse_lifetime_stats(life)
-
-    wr = parsed["win_rate_pct"]
-    wr_s = _fmt_opt(wr, ".1f") + "%" if wr is not None else "N/A"
-    kd_s = _fmt_opt(parsed["kd"], ".2f", "N/A")
-    hs_s = _fmt_opt(parsed["hs_pct"], ".1f") + "%" if parsed["hs_pct"] is not None else "N/A"
-    mp_s = str(int(parsed["matches"])) if parsed["matches"] is not None else "N/A"
-    streak_s = (
-        str(int(parsed["longest_win_streak"]))
-        if parsed["longest_win_streak"] is not None
-        else "N/A"
-    )
-
-    w, l = parsed.get("wins"), parsed.get("losses")
-    wl_s = "—"
-    if w is not None and l is not None:
-        wl_s = f"{int(w)} : {int(l)}"
-
-    kills_t = _fmt_opt(parsed.get("kills"), ".0f", "—")
-    deaths_t = _fmt_opt(parsed.get("deaths"), ".0f", "—")
-    ast_t = _fmt_opt(parsed.get("assists"), ".0f", "—")
-    rnd_t = _fmt_opt(parsed.get("rounds"), ".0f", "—")
-    mvp_t = _fmt_opt(parsed.get("mvps"), ".0f", "—")
-    kr_s = _fmt_opt(parsed.get("kr"), ".2f", "—")
-    avg_k = _fmt_opt(parsed.get("avg_kills"), ".2f", "—")
-    avg_d = _fmt_opt(parsed.get("avg_deaths"), ".2f", "—")
-
-    items = (recent_raw or {}).get("items") or []
-    form = recent_form_badge(items, limit=10)
-    nick_disp = esc(p.get("nickname") or nick)
-
-    lines: list[str] = [
-        section("📊", "CS2 dashboard"),
-        f"{tier} <b>{nick_disp}</b> {flg}".rstrip(),
-        sep(26),
-        section("🎯", "Overview"),
-        f"{bold('ELO')} {code(str(elo))}   {bold('Level')} {code(str(level))}",
-        f"{bold('Region')} {code(region)}",
-        sep(26),
-        section("⚔️", "Combat averages"),
-        f"{bold('Win rate')} {code(wr_s)}   {bold('K/D')} {code(kd_s)}   {bold('HS%')} {code(hs_s)}",
-        f"{bold('K/R')} {code(kr_s)}   {bold('MVPs')} {code(mvp_t)}",
-        f"{bold('Avg K')} {code(avg_k)}   {bold('Avg D')} {code(avg_d)}",
-        sep(26),
-        section("📈", "Totals"),
-        f"{bold('Matches')} {code(mp_s)}   {bold('W : L')} {code(wl_s)}   {bold('Best streak')} {code(streak_s)}",
-        f"{bold('K / D / A')} {code(kills_t)} / {code(deaths_t)} / {code(ast_t)}   {bold('Rounds')} {code(rnd_t)}",
-        sep(26),
-        section("🔥", "Recent form"),
-        f"{form}",
-        italic("🟩 win · 🟥 loss · ⬜ unknown · order = API (usually newest first)"),
-    ]
-
-    text = "\n".join(lines)
+    text = format_stats_dashboard_html(bundle)
+    url_kb = player_links_kb(bundle["faceit_url"])
     await message.answer(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=with_navigation(player_links_kb(str(p.get("faceit_url") or ""))),
+        reply_markup=ctx_stats_kb(url_kb),
     )
+
+    if own_account and bundle["elo"]:
+        try:
+            await dbmod.record_elo_snapshot(db, uid, bundle["elo"], bundle["level"])
+        except Exception as exc:
+            logger.warning("record_elo_snapshot failed: %s", exc, exc_info=True)
 
 
 async def answer_matches_list(
@@ -401,6 +301,7 @@ async def answer_matches_list(
     db,
     faceit,
     limit: int = 10,
+    page: int = 1,
     *,
     actor_telegram_id: int | None = None,
 ) -> None:
@@ -410,6 +311,12 @@ async def answer_matches_list(
 
     pid = user["faceit_player_id"]
     limit = max(1, min(20, limit))
+    page = max(1, page)
+
+    if message.bot:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
+    loading = await message.answer("⏳ Fetching matches…")
 
     try:
         raw, hist = await asyncio.gather(
@@ -417,33 +324,16 @@ async def answer_matches_list(
             faceit.get_player_history(pid, limit=limit),
         )
     except FaceitNotFoundError:
-        await message.answer(
-            bold("Player not found."),
-            parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
-        )
+        await loading.delete()
+        await message.answer(bold("Player not found."), parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
-    except FaceitUnavailableError:
-        await message.answer(
-            bold("FACEIT is temporarily unavailable."),
-            parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
-        )
+    except (FaceitUnavailableError, FaceitRateLimitError, FaceitAPIError) as exc:
+        await loading.delete()
+        msg = bold("FACEIT rate limit.") if isinstance(exc, FaceitRateLimitError) else bold("FACEIT is temporarily unavailable.")
+        await message.answer(msg + " Try again shortly.", parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
-    except FaceitRateLimitError:
-        await message.answer(
-            bold("FACEIT rate limit."),
-            parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
-        )
-        return
-    except FaceitAPIError:
-        await message.answer(
-            bold("FACEIT error."),
-            parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
-        )
-        return
+
+    await loading.delete()
 
     hist_map: dict[str, dict] = {}
     for h in hist.get("items") or []:
@@ -454,22 +344,19 @@ async def answer_matches_list(
             hist_map[str(hid)] = h
 
     items = raw.get("items") or []
-    board_entries: list[tuple[str, str]] = []
-    pre_rows: list[str] = []
+    all_board_entries: list[tuple[str, str]] = []
+    all_pre_rows: list[str] = []
     nick_label = esc(user["faceit_nickname"])
-    idx = 0
 
-    for it in items:
+    for idx, it in enumerate(items, start=1):
         stats = it.get("stats") if isinstance(it, dict) else None
         if not isinstance(stats, dict):
             continue
         row = parse_match_stats_row(stats)
-        mid = row.get("match_id")
-        if not mid and isinstance(it, dict) and it.get("match_id"):
-            mid = str(it["match_id"])
+        mid = row.get("match_id") or (str(it.get("match_id")) if isinstance(it, dict) and it.get("match_id") else None)
+        if mid:
             row["match_id"] = mid
 
-        idx += 1
         wl = "W" if row["won"] is True else ("L" if row["won"] is False else "?")
         kd_val = row["kd"]
         kd_s = f"{kd_val:.2f}" if kd_val is not None else "—"
@@ -485,7 +372,7 @@ async def answer_matches_list(
         if len(score_s) > 7:
             score_s = score_s[:6] + "…"
 
-        pre_rows.append(
+        all_pre_rows.append(
             f"{idx:2d}   {wl:^3}   {map_cell:<16}   {kd_s:>5}   {score_s:>7}   {when_s:>7}"
         )
 
@@ -499,50 +386,55 @@ async def answer_matches_list(
                 label = f"{idx:02d} {wl_e} {map_btn} · {tail}"
             if len(label) > 64:
                 label = label[:64]
-            board_entries.append((str(mid), label))
+            all_board_entries.append((str(mid), label))
 
-    if not pre_rows:
+    if not all_pre_rows:
         await message.answer(
-            "\n".join(
-                [
-                    section("📜", "Recent matches"),
-                    f"{bold('Player')}: {nick_label}",
-                    "",
-                    italic("No recent matches returned by FACEIT."),
-                ]
-            ),
+            "\n".join([section("📜", "Recent matches"), f"{bold('Player')}: {nick_label}", "", italic("No recent matches returned by FACEIT.")]),
             parse_mode=ParseMode.HTML,
-            reply_markup=with_match_boards_and_nav(None),
+            reply_markup=ctx_matches_kb(),
         )
         return
+
+    total_rows = len(all_pre_rows)
+    total_pages = max(1, (total_rows + MATCHES_PAGE_SIZE - 1) // MATCHES_PAGE_SIZE)
+    page = min(page, total_pages)
+    start = (page - 1) * MATCHES_PAGE_SIZE
+    end = start + MATCHES_PAGE_SIZE
+
+    page_rows = all_pre_rows[start:end]
+    page_entries = all_board_entries[start:end]
 
     table_header = (
         f"{'#':>2}   {'W/L':^3}   {'Map':<16}   {'K/D':>5}   {'Score':>7}   {'When':>7}\n"
         f"{'─' * 2}   {'─' * 3}   {'─' * 16}   {'─' * 5}   {'─' * 7}   {'─' * 7}"
     )
-    pre_body = table_header + "\n" + "\n".join(pre_rows)
-    pre_html = "<pre>" + html.escape(pre_body) + "</pre>"
+    pre_html = "<pre>" + html.escape(table_header + "\n" + "\n".join(page_rows)) + "</pre>"
 
     caption_lines = [
         section("📜", "Recent matches"),
-        f"🎮 <b>{nick_label}</b> · {len(pre_rows)} games",
-        italic("Newest first · times UTC · table row # = button order · tap a row for full scoreboard."),
+        f"🎮 <b>{nick_label}</b> · {total_rows} game{'s' if total_rows != 1 else ''} total",
+        italic("Tap a row button for the full scoreboard."),
         "",
         pre_html,
     ]
-    text = "\n".join(caption_lines)
+    boards = match_boards_kb(page_entries)
+    pagination = matches_pagination_kb(page, total_pages, limit)
+    nav = with_match_boards_and_nav(boards, pagination)
+    await message.answer("\n".join(caption_lines), parse_mode=ParseMode.HTML, reply_markup=nav)
 
-    boards = match_boards_kb(board_entries)
-    nav = with_match_boards_and_nav(boards)
-    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=nav)
 
+# ---------------------------------------------------------------------------
+# Command handlers
+# ---------------------------------------------------------------------------
 
 @router.message(Command("stats"))
-async def cmd_stats(message: Message, db, faceit) -> None:
+async def cmd_stats(message: Message, command: CommandObject, db, faceit) -> None:
     if msg := await _cooldown_block(message.from_user.id):
         await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
-    await answer_stats_dashboard(message, db, faceit)
+    nickname = (command.args or "").strip() or None
+    await answer_stats_dashboard(message, db, faceit, lookup_nickname=nickname)
 
 
 @router.message(Command("matches"))
@@ -556,7 +448,7 @@ async def cmd_matches(message: Message, command: CommandObject, db, faceit) -> N
             limit = int(command.args.split()[0])
         except (ValueError, IndexError):
             limit = 10
-    await answer_matches_list(message, db, faceit, limit=limit)
+    await answer_matches_list(message, db, faceit, limit=limit, page=1)
 
 
 _MATCH_ID_RE = re.compile(r"^[a-fA-F0-9\-]{8,}$")
@@ -573,13 +465,15 @@ async def cmd_match(message: Message, command: CommandObject, db, faceit) -> Non
             reply_markup=with_navigation(),
         )
         return
-
     if msg := await _cooldown_block(message.from_user.id):
         await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
-
     await send_match_scoreboard(message, db, faceit, mid, message.from_user.id)
 
+
+# ---------------------------------------------------------------------------
+# Callback handlers
+# ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("m:"))
 async def cb_match_board(callback: CallbackQuery, db, faceit) -> None:
@@ -594,13 +488,34 @@ async def cb_match_board(callback: CallbackQuery, db, faceit) -> None:
         await callback.answer(msg[:180], show_alert=True)
         return
     await callback.answer()
-    await send_match_scoreboard(
-        callback.message,
-        db,
-        faceit,
-        mid,
-        callback.from_user.id,
+    await send_match_scoreboard(callback.message, db, faceit, mid, callback.from_user.id)
+
+
+@router.callback_query(F.data.startswith("matches:p:"))
+async def cb_matches_page(callback: CallbackQuery, db, faceit) -> None:
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
+    parts = callback.data.split(":")
+    try:
+        page = int(parts[2])
+        limit = int(parts[3])
+    except (IndexError, ValueError):
+        await callback.answer("Invalid page", show_alert=True)
+        return
+    if msg := await _cooldown_block(callback.from_user.id):
+        await callback.answer(msg[:180], show_alert=True)
+        return
+    await callback.answer()
+    await answer_matches_list(
+        callback.message, db, faceit, limit=limit, page=page,
+        actor_telegram_id=callback.from_user.id,
     )
+
+
+@router.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
 
 
 @router.callback_query(F.data == "nav:stats")
@@ -612,12 +527,7 @@ async def cb_nav_stats(callback: CallbackQuery, db, faceit) -> None:
         await callback.answer(msg[:180], show_alert=True)
         return
     await callback.answer()
-    await answer_stats_dashboard(
-        callback.message,
-        db,
-        faceit,
-        actor_telegram_id=callback.from_user.id,
-    )
+    await answer_stats_dashboard(callback.message, db, faceit, actor_telegram_id=callback.from_user.id)
 
 
 @router.callback_query(F.data == "nav:matches")
@@ -630,9 +540,6 @@ async def cb_nav_matches(callback: CallbackQuery, db, faceit) -> None:
         return
     await callback.answer()
     await answer_matches_list(
-        callback.message,
-        db,
-        faceit,
-        limit=10,
+        callback.message, db, faceit, limit=10, page=1,
         actor_telegram_id=callback.from_user.id,
     )

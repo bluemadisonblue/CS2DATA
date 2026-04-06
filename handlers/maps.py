@@ -6,11 +6,12 @@ import time
 from collections import Counter
 
 from aiogram import F, Router
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
 import database as dbmod
+from config import COOLDOWN_SEC
 from faceit_api import (
     FaceitAPIError,
     FaceitNotFoundError,
@@ -18,12 +19,11 @@ from faceit_api import (
     FaceitUnavailableError,
     parse_match_stats_row,
 )
-from keyboards.inline import with_navigation
+from keyboards.inline import ctx_maps_kb, with_navigation
 from ui_text import bold, code, esc, italic, section, sep
 
 router = Router(name="maps")
 
-COOLDOWN_SEC = 10.0
 _last: dict[int, float] = {}
 
 
@@ -70,9 +70,15 @@ async def answer_maps_mix(
     pid = user["faceit_player_id"]
     limit = max(10, min(60, limit))
 
+    if message.bot:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
+    loading = await message.answer("⏳ Fetching map data…")
+
     try:
         raw = await faceit.get_player_match_stats(pid, limit=limit, offset=0)
     except FaceitNotFoundError:
+        await loading.delete()
         await message.answer(
             bold("Player not found."),
             parse_mode=ParseMode.HTML,
@@ -80,26 +86,31 @@ async def answer_maps_mix(
         )
         return
     except FaceitUnavailableError:
+        await loading.delete()
         await message.answer(
-            bold("FACEIT is temporarily unavailable."),
+            bold("FACEIT is temporarily unavailable.") + "\nTry again in a moment.",
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
         return
     except FaceitRateLimitError:
+        await loading.delete()
         await message.answer(
-            bold("FACEIT rate limit."),
+            bold("FACEIT rate limit.") + " Try again shortly.",
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
         return
     except FaceitAPIError:
+        await loading.delete()
         await message.answer(
-            bold("FACEIT error."),
+            bold("FACEIT error.") + " Try again later.",
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
         return
+
+    await loading.delete()
 
     items = (raw or {}).get("items") or []
     ctr: Counter[str] = Counter()
@@ -141,7 +152,7 @@ async def answer_maps_mix(
     await message.answer(
         "\n".join(lines),
         parse_mode=ParseMode.HTML,
-        reply_markup=with_navigation(),
+        reply_markup=ctx_maps_kb(),
     )
 
 
