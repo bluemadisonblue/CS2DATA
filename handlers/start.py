@@ -103,6 +103,8 @@ ABOUT_HTML = "\n".join(
         f"{link('https://docs.faceit.com/', 'FACEIT Data API')} "
         "(CS2). This bot is not affiliated with FACEIT.",
         "",
+        f"{bold('Contact')} {code('@tyuiqak')} · {code('tyuiqak@gmail.com')}",
+        "",
         sep(20),
         italic("1.4: inline @bot stats, /leaderboard, /party, shared stats_format module."),
     ]
