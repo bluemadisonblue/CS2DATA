@@ -16,6 +16,7 @@ def setup_routers() -> Router:
         register,
         start,
         stats,
+        watch_trend,
     )
 
     root.include_router(start.router)
@@ -28,4 +29,5 @@ def setup_routers() -> Router:
     root.include_router(compare.router)
     root.include_router(party.router)
     root.include_router(leaderboard.router)
+    root.include_router(watch_trend.router)
     return root
