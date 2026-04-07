@@ -25,8 +25,13 @@ def md_section_title(emoji: str, title: str) -> str:
     return f"{emoji} *{title}*"
 
 
-def recent_form_badge(items: list[dict], limit: int = 8) -> str:
-    """Build win/loss strip from games/cs2/stats items (emoji = quick scan)."""
+def recent_form_badge(items: list[dict], limit: int = 8) -> tuple[str, int]:
+    """
+    Build win/loss strip from match-stat items (newest match = leftmost tile).
+
+    Returns (display_string, number_of_tiles). Tiles are joined without spaces so
+    the bar reads as one continuous row in monospace contexts.
+    """
     chars: list[str] = []
     for it in items[:limit]:
         if not isinstance(it, dict):
@@ -42,8 +47,8 @@ def recent_form_badge(items: list[dict], limit: int = 8) -> str:
         else:
             chars.append("⬜")
     if not chars:
-        return "—"
-    return " ".join(chars)
+        return "—", 0
+    return "".join(chars), len(chars)
 
 
 def format_score_from_history(results: dict | None) -> str | None:

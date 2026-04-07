@@ -57,19 +57,24 @@ class TestRecentFormBadge:
         return {"stats": {"Result": result}}
 
     def test_empty_items_returns_dash(self):
-        assert recent_form_badge([]) == "—"
+        text, n = recent_form_badge([])
+        assert text == "—"
+        assert n == 0
 
     def test_win(self):
-        badge = recent_form_badge([self._make_item("1")])
+        badge, n = recent_form_badge([self._make_item("1")])
         assert "🟩" in badge
+        assert n == 1
 
     def test_loss(self):
-        badge = recent_form_badge([self._make_item("0")])
+        badge, n = recent_form_badge([self._make_item("0")])
         assert "🟥" in badge
+        assert n == 1
 
     def test_unknown_result(self):
-        badge = recent_form_badge([{"stats": {"Result": "?"}}])
+        badge, n = recent_form_badge([{"stats": {"Result": "?"}}])
         assert "⬜" in badge
+        assert n == 1
 
     def test_mixed_results(self):
         items = [
@@ -77,35 +82,38 @@ class TestRecentFormBadge:
             self._make_item("0"),
             self._make_item("1"),
         ]
-        badge = recent_form_badge(items)
+        badge, n = recent_form_badge(items)
         assert "🟩" in badge
         assert "🟥" in badge
+        assert n == 3
 
     def test_limit_applied(self):
         items = [self._make_item("1")] * 20
-        badge = recent_form_badge(items, limit=5)
-        # 5 wins separated by spaces = 5 emojis
+        badge, n = recent_form_badge(items, limit=5)
         assert badge.count("🟩") == 5
+        assert n == 5
 
     def test_default_limit_is_8(self):
         items = [self._make_item("1")] * 20
-        badge = recent_form_badge(items)
+        badge, n = recent_form_badge(items)
         assert badge.count("🟩") == 8
+        assert n == 8
 
     def test_non_dict_item_skipped(self):
         items = ["not_a_dict", self._make_item("1")]
-        badge = recent_form_badge(items)
+        badge, _ = recent_form_badge(items)
         assert "🟩" in badge
 
     def test_missing_stats_key_skipped(self):
         items = [{"no_stats": {}}, self._make_item("1")]
-        badge = recent_form_badge(items)
+        badge, _ = recent_form_badge(items)
         assert "🟩" in badge
 
     def test_all_unknown(self):
         items = [{"stats": {}}] * 3
-        badge = recent_form_badge(items)
+        badge, n = recent_form_badge(items)
         assert badge.count("⬜") == 3
+        assert n == 3
 
 
 class TestFormatScoreFromHistory:

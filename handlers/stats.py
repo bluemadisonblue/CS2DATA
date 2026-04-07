@@ -25,7 +25,7 @@ from faceit_api import (
     group_rows_by_team,
     parse_match_stats_row,
 )
-from formatting import flag_emoji, pick_history_meta, recent_form_badge
+from formatting import flag_emoji, pick_history_meta
 from stats_format import fetch_stats_bundle, format_stats_dashboard_html
 from keyboards.inline import (
     ctx_matches_kb,

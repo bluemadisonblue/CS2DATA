@@ -83,14 +83,8 @@ async def fetch_stats_bundle(
     avg_d = _fmt_opt(parsed.get("avg_deaths"), ".2f", "—")
 
     items = (recent_raw or {}).get("items") or []
-    form = recent_form_badge(items, limit=10)
+    form, form_n = recent_form_badge(items, limit=min(10, RECENT_FORM_LIMIT))
     streak_info = current_win_streak(items)
-    streak_line = ""
-    if streak_info is not None:
-        is_win, streak_len = streak_info
-        streak_emoji = "🟩" if is_win else "🟥"
-        streak_label = "W" if is_win else "L"
-        streak_line = f"{bold('Current streak')} {code(streak_emoji + ' ' + streak_label + str(streak_len))}"
 
     nick_raw = str(p.get("nickname") or nickname or "?")
 
@@ -117,7 +111,8 @@ async def fetch_stats_bundle(
         "avg_k": avg_k,
         "avg_d": avg_d,
         "form": form,
-        "streak_line": streak_line,
+        "recent_form_n": form_n,
+        "streak": streak_info,
         "faceit_url": str(p.get("faceit_url") or ""),
     }
 
@@ -143,9 +138,39 @@ def format_stats_dashboard_html(bundle: dict[str, Any]) -> str:
         f"{bold('K / D / A')} {code(bundle['kills_t'])} / {code(bundle['deaths_t'])} / {code(bundle['ast_t'])}   {bold('Rounds')} {code(bundle['rnd_t'])}",
         sep(26),
         section("🔥", "Recent form"),
-        bundle["form"],
+        italic("Each block is one match. Reading left → right: newest → older."),
     ]
-    if bundle.get("streak_line"):
-        lines.append(bundle["streak_line"])
-    lines.append(italic("🟩 win · 🟥 loss · ⬜ unknown · newest first"))
+    form_raw = bundle["form"]
+    n_show = int(bundle.get("recent_form_n") or 0)
+    if form_raw == "—" or n_show == 0:
+        lines.append(italic("No recent match rows returned by FACEIT for this view."))
+    else:
+        cap = RECENT_FORM_LIMIT
+        lines.append(
+            italic(
+                f"{n_show} match{'es' if n_show != 1 else ''} shown "
+                f"(up to {cap} from the API)."
+            )
+        )
+        lines.append(f"<code>{form_raw}</code>")
+
+    streak = bundle.get("streak")
+    if streak is not None:
+        is_win, n = streak[0], streak[1]
+        if is_win:
+            phrase = f"{n} win in a row" if n == 1 else f"{n} wins in a row"
+            mark = "🟢"
+        else:
+            phrase = f"{n} loss in a row" if n == 1 else f"{n} losses in a row"
+            mark = "🔴"
+        lines.append("")
+        lines.append(f"{bold('Active streak')} {mark} {code(phrase)}")
+
+    lines.append("")
+    lines.append(
+        italic(
+            "Legend — 🟩 win · 🟥 loss · ⬜ unknown · streak counts consecutive "
+            "results from your latest match backward."
+        )
+    )
     return "\n".join(lines)
