@@ -13,7 +13,11 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 FACEIT_API_KEY: str = os.getenv("FACEIT_API_KEY", "")
 FACEIT_BASE_URL: str = "https://open.faceit.com/data/v4"
 GAME_ID: str = "cs2"
-DB_PATH: str = str(Path(__file__).resolve().parent / "bot_data.db")
+# Local default: project dir. For Docker/DO: set DB_PATH=/data/bot_data.db and mount a volume on /data.
+DB_PATH: str = os.getenv(
+    "DB_PATH",
+    str(Path(__file__).resolve().parent / "bot_data.db"),
+)
 
 # ---------------------------------------------------------------------------
 # Rate / cooldown settings

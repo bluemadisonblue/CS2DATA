@@ -1,0 +1,37 @@
+# DigitalOcean App Platform — Worker (no HTTP).
+# 1. Push this repo to GitHub and connect it in DO Apps.
+# 2. Create app from spec: doctl apps create --spec .do/app.yaml
+#    Or paste into the UI: Settings → App Spec.
+# 3. Set secrets in the dashboard (or replace placeholder values):
+#    BOT_TOKEN, FACEIT_API_KEY
+# 4. App Platform has NO attachable persistent volumes — SQLite is lost on each
+#    deploy. For durable DB use a Droplet + docker-compose.yml instead.
+#
+# Edit `github.repo` and `github.branch` below to match your repository.
+
+name: cs2-faceit-bot
+region: fra
+
+workers:
+  - name: bot
+    dockerfile_path: Dockerfile
+    source_dir: /
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    github:
+      repo: bluemadisonblue/CS2DATA
+      branch: main
+      deploy_on_push: true
+    envs:
+      - key: BOT_TOKEN
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME_IN_DASHBOARD
+      - key: FACEIT_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME_IN_DASHBOARD
+      - key: PYTHONUNBUFFERED
+        scope: RUN_TIME
+        type: GENERAL
+        value: "1"

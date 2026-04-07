@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
@@ -62,6 +63,7 @@ _MIGRATIONS = [
 # ---------------------------------------------------------------------------
 
 async def init_db(db_path: str = DB_PATH) -> None:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(db_path) as db:
         await db.execute(_SCHEMA_USERS)
         await db.execute(_SCHEMA_ELO_SNAPSHOTS)
