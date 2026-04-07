@@ -419,9 +419,9 @@ async def _inline_faceit_stats_impl(inline_query: InlineQuery, faceit) -> None:
         )
         return
 
-    html = format_stats_dashboard_html(bundle)
-    if len(html) > 4000:
-        html = html[:3990] + "\n<i>…truncated</i>"
+    dashboard_html = format_stats_dashboard_html(bundle)
+    if len(dashboard_html) > 4000:
+        dashboard_html = dashboard_html[:3990] + "\n<i>…truncated</i>"
 
     thumb = bundle.get("player", {}).get("avatar")
     thumb_url = str(thumb) if thumb and str(thumb).startswith("http") else None
@@ -435,7 +435,7 @@ async def _inline_faceit_stats_impl(inline_query: InlineQuery, faceit) -> None:
         title=title,
         description=desc,
         input_message_content=InputTextMessageContent(
-            message_text=html,
+            message_text=dashboard_html,
             parse_mode="HTML",
         ),
     )
