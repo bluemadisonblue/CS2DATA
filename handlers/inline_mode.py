@@ -7,6 +7,7 @@ import html
 import hashlib
 import logging
 import re
+import unicodedata
 
 from aiogram import Router
 from aiogram.types import (
@@ -30,8 +31,69 @@ router = Router(name="inline")
 logger = logging.getLogger(__name__)
 
 _HELP_ARTICLE_ID = "inline-stats-help"
-# Split on " vs ", "vs.", " v " (common shorthand). Requires spaces so "player" is not split.
-_VS_SPLIT_RE = re.compile(r"\s+(?:vs\.?|v)\s+", re.IGNORECASE)
+# Split on " vs ", "versus", " v ", or "nick1vs nick2" (no space before vs — common typo).
+# Single-letter " v " only when surrounded by spaces so we do not split inside words.
+_VS_SPLIT_RE = re.compile(
+    r"(?:\s+(?:versus|vs\.?|v)\s+|(?<=\S)(?:versus|vs\.?)\s+)",
+    re.IGNORECASE,
+)
+
+
+def _normalize_inline_query(q: str) -> str:
+    """NFKC + collapse whitespace (handles fullwidth / compatibility chars)."""
+    q = unicodedata.normalize("NFKC", (q or "").strip())
+    return " ".join(q.split())
+
+
+def _is_vs_separator_token(tok: str) -> bool:
+    """Latin vs / v / versus, or Cyrillic «вс» often typed instead of Latin «vs»."""
+    if not tok:
+        return False
+    t = tok.casefold()
+    if t in ("vs", "v", "versus"):
+        return True
+    # Cyrillic small ve + es (looks like "vs" on RU layout)
+    return t == "вс"
+
+
+def _try_parse_vs_tokens(q: str) -> list[str] | None:
+    """Whitespace token split — robust when regex misses (mixed scripts, odd spaces)."""
+    tokens = q.split()
+    if len(tokens) < 3:
+        return None
+    sep_idx = [i for i, t in enumerate(tokens) if _is_vs_separator_token(t)]
+    if not sep_idx:
+        return None
+    parts: list[str] = []
+    start = 0
+    for sep_i in sep_idx:
+        chunk = tokens[start:sep_i]
+        if chunk:
+            parts.append(" ".join(chunk))
+        start = sep_i + 1
+    if start < len(tokens):
+        tail = " ".join(tokens[start:])
+        if tail:
+            parts.append(tail)
+    return parts if len(parts) >= 2 else None
+
+
+def _looks_like_compare_intent(q: str) -> bool:
+    """Heuristic: user meant compare but we could not split (wrong script, etc.)."""
+    if not q:
+        return False
+    cf = q.casefold()
+    if " vs " in cf or cf.startswith("vs ") or cf.endswith(" vs"):
+        return True
+    if " versus " in cf:
+        return True
+    # Cyrillic «вс» as two letters (common vs misfire)
+    if " вс " in q:
+        return True
+    tokens = q.split()
+    if len(tokens) >= 3 and _is_vs_separator_token(tokens[1]):
+        return True
+    return False
 
 
 def _help_article() -> InlineQueryResultArticle:
@@ -39,8 +101,8 @@ def _help_article() -> InlineQueryResultArticle:
         "<b>FACEIT stats in any chat</b>\n\n"
         "Type <code>@YourBotName</code> and a FACEIT nickname, then tap a result to "
         "insert the CS2 dashboard.\n"
-        "Or use <code>@YourBotName nick1 vs nick2</code> (or <code>nick1 v nick2</code>) "
-        "for a shareable compare table.\n\n"
+        "Or use <code>@YourBotName nick1 vs nick2</code>, <code>nick1vs nick2</code>, "
+        "or <code>nick1 v nick2</code> for a shareable compare table.\n\n"
         "<i>Same data as /stats nickname — no registration.</i>"
     )
     return InlineQueryResultArticle(
@@ -86,7 +148,15 @@ def _party_pre_table(bundles: list[dict]) -> str:
 
 
 def _try_parse_vs_query(q: str) -> list[str] | None:
-    parts = [p.strip() for p in _VS_SPLIT_RE.split(q.strip()) if p.strip()]
+    q = _normalize_inline_query(q)
+    if not q:
+        return None
+    parts = [p.strip() for p in _VS_SPLIT_RE.split(q) if p.strip()]
+    if len(parts) < 2:
+        token_parts = _try_parse_vs_tokens(q)
+        if not token_parts:
+            return None
+        parts = [p.strip() for p in token_parts if p.strip()]
     if len(parts) < 2:
         return None
     # De-dup exact repeats while preserving order.
@@ -101,10 +171,68 @@ def _try_parse_vs_query(q: str) -> list[str] | None:
     return unique if len(unique) >= 2 else None
 
 
+def _inline_title(s: str, max_len: int = 64) -> str:
+    """Telegram inline result titles are capped (typically 64 chars); truncate safely."""
+    s = s.strip()
+    if len(s) <= max_len:
+        return s
+    if max_len < 1:
+        return ""
+    return s[: max_len - 1] + "…"
+
+
+def _compare_format_help_article() -> InlineQueryResultArticle:
+    return InlineQueryResultArticle(
+        id="inline-vs-format",
+        title=_inline_title("Compare: nick1 vs nick2"),
+        description="Latin letters, spaces around vs",
+        input_message_content=InputTextMessageContent(
+            message_text=(
+                "<b>Inline compare</b>\n\n"
+                "Use <b>Latin</b> letters for <code>vs</code>, with spaces:\n"
+                "<code>nick1 vs nick2</code>\n\n"
+                "If the keyboard inserted similar-looking letters (Cyrillic "
+                "<code>вс</code> instead of <code>vs</code>), delete and type "
+                "<code>vs</code> again in English layout.\n\n"
+                "<i>Wait until you finish typing both nicknames — results update as you type.</i>"
+            ),
+            parse_mode="HTML",
+        ),
+    )
+
+
 @router.inline_query()
 async def inline_faceit_stats(inline_query: InlineQuery, faceit) -> None:
+    try:
+        await _inline_faceit_stats_impl(inline_query, faceit)
+    except Exception as exc:
+        logger.exception("inline query failed: %s", exc)
+        try:
+            await inline_query.answer(
+                [
+                    InlineQueryResultArticle(
+                        id="inline-fatal",
+                        title="Inline error",
+                        description="Tap to see details",
+                        input_message_content=InputTextMessageContent(
+                            message_text=(
+                                "<b>Inline handler error</b>\n"
+                                f"<pre>{html.escape(str(exc)[:500])}</pre>"
+                            ),
+                            parse_mode="HTML",
+                        ),
+                    )
+                ],
+                cache_time=0,
+                is_personal=True,
+            )
+        except Exception:
+            logger.exception("inline query could not answer with error article")
+
+
+async def _inline_faceit_stats_impl(inline_query: InlineQuery, faceit) -> None:
     q_raw = (inline_query.query or "").strip()
-    q = " ".join(q_raw.split())
+    q = _normalize_inline_query(q_raw)
 
     if len(q) < INLINE_STATS_MIN_QUERY_LEN:
         await inline_query.answer(
@@ -160,7 +288,7 @@ async def inline_faceit_stats(inline_query: InlineQuery, faceit) -> None:
                 [
                     InlineQueryResultArticle(
                         id="vs-notfound",
-                        title="Could not compare",
+                        title=_inline_title("Could not compare"),
                         description=err_txt[:100],
                         input_message_content=InputTextMessageContent(
                             message_text=f"<b>Could not load enough players</b>\n<pre>{html.escape(err_txt)}</pre>",
@@ -194,6 +322,7 @@ async def inline_faceit_stats(inline_query: InlineQuery, faceit) -> None:
             title = f"{title_left} vs {title_right} +{len(bundles) - 2}"
         else:
             title = f"{title_left} vs {title_right}"
+        title = _inline_title(title)
         article = InlineQueryResultArticle(
             id=result_id,
             title=title,
@@ -204,6 +333,15 @@ async def inline_faceit_stats(inline_query: InlineQuery, faceit) -> None:
             ),
         )
         await inline_query.answer([article], cache_time=30, is_personal=True)
+        return
+
+    # Avoid searching FACEIT for "nick1 vs nick2" when vs was not recognized (wrong script, etc.).
+    if _looks_like_compare_intent(q):
+        await inline_query.answer(
+            [_compare_format_help_article()],
+            cache_time=0,
+            is_personal=True,
+        )
         return
 
     if len(q) > 64:
@@ -224,7 +362,7 @@ async def inline_faceit_stats(inline_query: InlineQuery, faceit) -> None:
                     ),
                 )
             ],
-            cache_time=5,
+            cache_time=0,
             is_personal=True,
         )
         return
@@ -272,7 +410,7 @@ async def inline_faceit_stats(inline_query: InlineQuery, faceit) -> None:
     thumb_url = str(thumb) if thumb and str(thumb).startswith("http") else None
 
     result_id = hashlib.sha256(q.lower().encode("utf-8")).hexdigest()[:64]
-    title = f"{bundle['nickname'][:36]} · ELO {bundle['elo']}"
+    title = _inline_title(f"{bundle['nickname'][:36]} · ELO {bundle['elo']}")
     desc = f"L{bundle['level']} · K/D {bundle['kd_s']} · WR {bundle['wr_s']}"[:120]
 
     art_kw: dict = dict(
