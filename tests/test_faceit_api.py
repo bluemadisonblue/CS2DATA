@@ -21,6 +21,7 @@ from faceit_api import (
     parse_lifetime_stats,
     parse_match_stats_row,
     resolve_match_faceit_url,
+    steam_community_url,
 )
 
 
@@ -579,3 +580,27 @@ class TestTTLCache:
         cache._store["key"] = (time.monotonic() - 10.0, "value")
         cache.get("key", ttl=5.0)  # triggers deletion
         assert "key" not in cache._store
+
+
+# ---------------------------------------------------------------------------
+# steam_community_url
+# ---------------------------------------------------------------------------
+
+
+class TestSteamCommunityUrl:
+    _sid = "76561198000000000"
+
+    def test_root_steam_id_64(self):
+        assert steam_community_url({"steam_id_64": self._sid}) == (
+            f"https://steamcommunity.com/profiles/{self._sid}"
+        )
+
+    def test_platforms_steam_dict(self):
+        p = {"platforms": {"steam": {"id": self._sid}}}
+        assert steam_community_url(p) == f"https://steamcommunity.com/profiles/{self._sid}"
+
+    def test_too_short_rejected(self):
+        assert steam_community_url({"steam_id_64": "12345"}) is None
+
+    def test_missing_returns_none(self):
+        assert steam_community_url({"nickname": "x"}) is None

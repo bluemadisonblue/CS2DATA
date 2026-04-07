@@ -19,10 +19,11 @@ from faceit_api import (
     FaceitRateLimitError,
     FaceitUnavailableError,
     extract_cs2_game,
+    steam_community_url,
 )
 from formatting import flag_emoji
 from keyboards.inline import ctx_profile_kb, player_links_kb, with_navigation
-from ui_text import bold, code, esc, not_linked_html, section, sep
+from ui_text import bold, code, esc, link, not_linked_html, section, sep
 
 router = Router(name="profile")
 
@@ -104,6 +105,7 @@ async def answer_profile_card(
     country = (p.get("country") or "").upper()
     flg = flag_emoji(country)
     steam = p.get("steam_nickname") or ""
+    steam_url = steam_community_url(p)
     faceit_url = str(p.get("faceit_url") or "")
     url_kb = player_links_kb(faceit_url)
 
@@ -119,7 +121,10 @@ async def answer_profile_card(
     if steam:
         lines.append("")
         lines.append(section("🎮", "Steam"))
-        lines.append(code(steam))
+        if steam_url:
+            lines.append(link(steam_url, steam))
+        else:
+            lines.append(code(steam))
 
     detail = "\n".join(lines)
     avatar = p.get("avatar")

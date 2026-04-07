@@ -441,6 +441,55 @@ def extract_cs2_game(player: dict[str, Any]) -> dict[str, Any] | None:
     return games.get(GAME_ID) or games.get("cs2")
 
 
+def steam_community_url(player: dict[str, Any]) -> str | None:
+    """If the FACEIT player payload includes a SteamID64, return the community profile URL."""
+
+    def _profiles_url(raw: Any) -> str | None:
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if not s.isdigit():
+            return None
+        # SteamID64 is 17 digits (7656119…); reject short noise.
+        if len(s) < 15:
+            return None
+        return f"https://steamcommunity.com/profiles/{s}"
+
+    for key in ("steam_id_64", "steam64", "steam_id"):
+        u = _profiles_url(player.get(key))
+        if u:
+            return u
+
+    pl = player.get("platforms")
+    if isinstance(pl, dict):
+        st = pl.get("steam") or pl.get("STEAM")
+        if isinstance(st, dict):
+            for key in ("id", "player_id", "steam_id", "steam_id_64", "steam64"):
+                u = _profiles_url(st.get(key))
+                if u:
+                    return u
+        elif st is not None:
+            u = _profiles_url(st)
+            if u:
+                return u
+
+    g = extract_cs2_game(player) or {}
+    for key in ("steam_id_64", "steam_id", "steam64"):
+        u = _profiles_url(g.get(key))
+        if u:
+            return u
+    nested = g.get("platforms")
+    if isinstance(nested, dict):
+        st = nested.get("steam") or nested.get("STEAM")
+        if isinstance(st, dict):
+            for key in ("id", "player_id", "steam_id", "steam_id_64", "steam64"):
+                u = _profiles_url(st.get(key))
+                if u:
+                    return u
+
+    return None
+
+
 class FaceitAPI:
     def __init__(
         self,
