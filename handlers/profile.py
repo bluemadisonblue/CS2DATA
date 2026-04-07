@@ -22,7 +22,7 @@ from faceit_api import (
 )
 from formatting import flag_emoji
 from keyboards.inline import ctx_profile_kb, player_links_kb, with_navigation
-from ui_text import append_share_watermark, bold, code, esc, section, sep
+from ui_text import bold, code, esc, not_linked_html, section, sep
 
 router = Router(name="profile")
 
@@ -53,8 +53,7 @@ async def answer_profile_card(
     u = await dbmod.get_user(db, uid)
     if not u:
         await message.answer(
-            f"{bold('Account not linked')}\n"
-            f"Use {code('/register your_faceit_nickname')} first.",
+            not_linked_html(),
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
@@ -123,16 +122,14 @@ async def answer_profile_card(
         lines.append(code(steam))
 
     detail = "\n".join(lines)
-    bot_u = message.bot.username if message.bot else None
-    detail_wm = append_share_watermark(detail, bot_u)
     avatar = p.get("avatar")
     markup = ctx_profile_kb(url_kb)
 
-    if avatar and str(avatar).startswith("http") and len(detail_wm) <= _CAPTION_MAX:
+    if avatar and str(avatar).startswith("http") and len(detail) <= _CAPTION_MAX:
         try:
             await message.answer_photo(
                 photo=URLInputFile(str(avatar)),
-                caption=detail_wm,
+                caption=detail,
                 parse_mode=ParseMode.HTML,
                 reply_markup=markup,
             )
@@ -145,7 +142,7 @@ async def answer_profile_card(
             )
 
     # No avatar, photo failed, or caption too long for one media message
-    await message.answer(detail_wm, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await message.answer(detail, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
 @router.message(Command("profile"))

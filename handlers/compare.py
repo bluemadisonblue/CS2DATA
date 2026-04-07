@@ -24,7 +24,7 @@ from faceit_api import (
 )
 from formatting import flag_emoji
 from keyboards.inline import ctx_compare_kb, with_navigation
-from ui_text import append_share_watermark, bold, code, italic, section
+from ui_text import bold, code, italic, not_linked_html, section
 
 router = Router(name="compare")
 
@@ -36,7 +36,7 @@ async def _cooldown(user_id: int) -> str | None:
     prev = _last.get(user_id)
     if prev is not None and (now - prev) < COOLDOWN_SEC:
         left = COOLDOWN_SEC - (now - prev)
-        return f"Wait ~{left:.0f}s before comparing again."
+        return f"Wait ~{left:.0f}s before refreshing."
     _last[user_id] = now
     return None
 
@@ -211,8 +211,7 @@ async def cmd_compare(message: Message, command: CommandObject, db, faceit) -> N
     me = await dbmod.get_user(db, message.from_user.id)
     if not me:
         await message.answer(
-            f"{bold('Account not linked')}\n"
-            f"Use {code('/register your_faceit_nickname')} first.",
+            not_linked_html(),
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
@@ -277,13 +276,9 @@ async def cmd_compare(message: Message, command: CommandObject, db, faceit) -> N
         f"<b>{html.escape(opp['nickname'])}</b> {of}\n"
     )
     body = _compare_table(you, opp)
-    out = append_share_watermark(
-        header + body,
-        message.bot.username if message.bot else None,
-    )
 
     await message.answer(
-        out,
+        header + body,
         parse_mode=ParseMode.HTML,
         reply_markup=ctx_compare_kb(),
     )

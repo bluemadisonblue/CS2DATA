@@ -20,7 +20,7 @@ from faceit_api import (
     parse_match_stats_row,
 )
 from keyboards.inline import ctx_maps_kb, with_navigation
-from ui_text import append_share_watermark, bold, code, esc, italic, section
+from ui_text import bold, code, esc, italic, not_linked_html, section
 
 router = Router(name="maps")
 
@@ -47,8 +47,7 @@ async def _need_user(
     u = await dbmod.get_user(db, uid)
     if not u:
         await message.answer(
-            f"{bold('Account not linked')}\n"
-            f"Use {code('/register your_faceit_nickname')} first.",
+            not_linked_html(),
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
@@ -223,12 +222,8 @@ async def answer_maps_mix(
         lines.append("")
         lines.append(italic(f"{unknown} row(s) without a map label"))
 
-    maps_text = append_share_watermark(
-        "\n".join(lines),
-        message.bot.username if message.bot else None,
-    )
     await message.answer(
-        maps_text,
+        "\n".join(lines),
         parse_mode=ParseMode.HTML,
         reply_markup=ctx_maps_kb(),
     )

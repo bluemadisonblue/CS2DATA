@@ -38,7 +38,7 @@ from keyboards.inline import (
     with_match_boards_and_nav,
     with_navigation,
 )
-from ui_text import append_share_watermark, bold, code, esc, italic, section
+from ui_text import bold, code, esc, italic, not_linked_html, section
 
 router = Router(name="stats")
 
@@ -114,8 +114,7 @@ async def _need_user(message: Message, db, *, actor_telegram_id: int | None = No
     u = await dbmod.get_user(db, uid)
     if not u:
         await message.answer(
-            f"{bold('Account not linked')}\n"
-            f"Use {code('/register your_faceit_nickname')} first.",
+            not_linked_html(),
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
@@ -132,8 +131,7 @@ async def send_match_scoreboard(
     user = await dbmod.get_user(db, actor_telegram_id)
     if not user:
         await message.answer(
-            f"{bold('Account not linked')}\n"
-            f"Use {code('/register your_faceit_nickname')} first.",
+            not_linked_html(),
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
@@ -191,12 +189,8 @@ async def send_match_scoreboard(
         body.append(italic("Only one team in payload."))
 
     faceit_url = resolve_match_faceit_url(meta, mid)
-    scoreboard_text = append_share_watermark(
-        "\n".join(body),
-        message.bot.username if message.bot else None,
-    )
     await message.answer(
-        scoreboard_text,
+        "\n".join(body),
         parse_mode=ParseMode.HTML,
         reply_markup=ctx_scoreboard_kb(match_faceit_kb(faceit_url)),
     )
@@ -276,26 +270,15 @@ async def answer_stats_dashboard(
         )
         return
 
+    await loading.delete()
+
     text = format_stats_dashboard_html(bundle)
     url_kb = player_links_kb(bundle["faceit_url"])
-    try:
-        await message.answer(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=ctx_stats_kb(url_kb),
-        )
-    except Exception as exc:
-        logger.exception("stats dashboard send failed: %s", exc)
-        await message.answer(
-            bold("Could not send stats (Telegram rejected the message). Try again."),
-            parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
-        )
-    finally:
-        try:
-            await loading.delete()
-        except Exception:
-            pass
+    await message.answer(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=ctx_stats_kb(url_kb),
+    )
 
     if own_account and bundle["elo"]:
         try:
@@ -414,11 +397,7 @@ async def answer_matches_list(
     boards = match_boards_kb(page_entries)
     pagination = matches_pagination_kb(page, total_pages, limit)
     nav = with_match_boards_and_nav(boards, pagination)
-    matches_text = append_share_watermark(
-        "\n".join(caption_lines),
-        message.bot.username if message.bot else None,
-    )
-    await message.answer(matches_text, parse_mode=ParseMode.HTML, reply_markup=nav)
+    await message.answer("\n".join(caption_lines), parse_mode=ParseMode.HTML, reply_markup=nav)
 
 
 # ---------------------------------------------------------------------------

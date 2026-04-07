@@ -3,11 +3,6 @@
 from __future__ import annotations
 
 import html
-import re
-
-from config import BOT_USERNAME
-
-_WATERMARK_USER_RE = re.compile(r"^[a-zA-Z0-9_]{4,32}$")
 
 
 def esc(x: str | int | float | None) -> str:
@@ -44,6 +39,15 @@ def bullet_line(text: str) -> str:
     return f"• {text}"
 
 
+def not_linked_html() -> str:
+    """When a feature needs a linked account: short hint + inline lookup alternative."""
+    return (
+        f"{bold('No link yet')}\n"
+        f"{code('/register')} nickname {italic('or')} inline {code('@bot')} nickname "
+        f"{italic('(no registration for lookup)')}."
+    )
+
+
 def tip_item(*html_parts: str) -> str:
     """
     Italic bullet for help/hint lines that mix plain text with <code> etc.
@@ -55,11 +59,3 @@ def tip_item(*html_parts: str) -> str:
 
 def spacer() -> str:
     return ""
-
-
-def append_share_watermark(html: str, bot_username: str | None = None) -> str:
-    """Subtle footer for screenshot-friendly messages (not used on /stats dashboard)."""
-    u = (bot_username or BOT_USERNAME or "").strip().lstrip("@")
-    if not u or not _WATERMARK_USER_RE.match(u):
-        return html
-    return html + "\n\n" + italic("via ") + link(f"https://t.me/{u}", f"@{u}")

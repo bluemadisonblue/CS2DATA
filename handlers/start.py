@@ -6,7 +6,7 @@ import os
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
 from config import BOT_VERSION, COOLDOWN_SEC, MATCHES_PAGE_SIZE, PARTY_MAX_PLAYERS
@@ -117,7 +117,35 @@ ABOUT_HTML = "\n".join(
 
 
 @router.message(Command("start"))
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, command: CommandObject) -> None:
+    payload = (command.args or "").strip().lower()
+    if payload == "register":
+        await message.answer(
+            "\n".join(
+                [
+                    section("🔗", "Register"),
+                    "",
+                    f"Send {code('/register your_faceit_nickname')} in this chat to link your FACEIT account.",
+                ]
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_kb(),
+        )
+        return
+    if payload == "stats":
+        await message.answer(
+            "\n".join(
+                [
+                    section("📊", "Stats"),
+                    "",
+                    f"{bold('Your account:')} {code('/stats')} {italic('(after /register)')}.",
+                    f"{bold('Anyone:')} {code('/stats nickname')} {italic('or')} inline {code('@bot')} + nickname.",
+                ]
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_kb(),
+        )
+        return
     await message.answer(WELCOME_HTML, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb())
 
 

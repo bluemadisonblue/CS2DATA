@@ -139,7 +139,7 @@ def format_stats_dashboard_html(bundle: dict[str, Any]) -> str:
     if form_raw == "—" or n_show == 0:
         lines.append(italic("No recent matches in this API batch."))
     else:
-        lines.append(code(str(form_raw)))
+        lines.append(f"<code>{form_raw}</code>")
 
     streak = bundle.get("streak")
     if streak is not None:

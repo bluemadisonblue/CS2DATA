@@ -25,7 +25,6 @@ from faceit_api import (
 )
 from handlers.compare import fetch_bundle_for_nickname
 from stats_format import fetch_stats_bundle, format_stats_dashboard_html
-from ui_text import append_share_watermark
 
 router = Router(name="inline")
 
@@ -331,10 +330,6 @@ async def _inline_faceit_stats_impl(inline_query: InlineQuery, faceit) -> None:
                 f"\n<i>Showing first {PARTY_MAX_PLAYERS} players "
                 f"(inline limit).</i>"
             )
-        body = append_share_watermark(
-            body,
-            inline_query.bot.username if inline_query.bot else None,
-        )
         result_id = hashlib.sha256(
             f"vs:{'::'.join(n.casefold() for n in nicks)}".encode("utf-8")
         ).hexdigest()[:64]

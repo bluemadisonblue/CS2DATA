@@ -17,7 +17,7 @@ from faceit_api import (
     FaceitUnavailableError,
 )
 from keyboards.inline import register_confirm_kb, register_success_kb, unlink_confirm_kb, with_navigation
-from ui_text import bold, code
+from ui_text import bold, code, italic
 
 router = Router(name="register")
 
@@ -99,6 +99,7 @@ async def cmd_register(
             await message.answer(
                 f"{bold('Already linked')}\n"
                 f"You are already connected as {code(resolved_nick)}.\n"
+                f"{italic('Change nickname anytime:')} {code('/register new_nickname')}\n"
                 f"Use the buttons below to open stats or matches.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=register_success_kb(),
@@ -124,6 +125,7 @@ async def cmd_register(
     await message.answer(
         f"{bold('You are set!')}\n"
         f"Linked as {code(resolved_nick)}.\n"
+        f"{italic('Change nickname anytime:')} {code('/register new_nickname')}\n"
         f"Try {code('/stats')} or tap ⭐ My stats below.",
         parse_mode=ParseMode.HTML,
         reply_markup=register_success_kb(),
@@ -159,7 +161,8 @@ async def cb_reg_confirm(
     await dbmod.upsert_user(db, callback.from_user.id, nick, pid)
     if callback.message:
         await callback.message.answer(
-            f"{bold('Profile updated')}\nNow linked as {code(nick)}.",
+            f"{bold('Profile updated')}\nNow linked as {code(nick)}.\n"
+            f"{italic('Change nickname anytime:')} {code('/register new_nickname')}",
             parse_mode=ParseMode.HTML,
             reply_markup=register_success_kb(),
         )

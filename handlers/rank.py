@@ -20,7 +20,7 @@ from faceit_api import (
     extract_cs2_game,
 )
 from keyboards.inline import ctx_rank_kb, player_links_kb, with_navigation
-from ui_text import append_share_watermark, bold, code, esc, italic, section, sep
+from ui_text import bold, code, esc, italic, not_linked_html, section, sep
 
 router = Router(name="rank")
 
@@ -58,8 +58,7 @@ async def answer_rank_card(
     u = await dbmod.get_user(db, uid)
     if not u:
         await message.answer(
-            f"{bold('Account not linked')}\n"
-            f"Use {code('/register your_faceit_nickname')} first.",
+            not_linked_html(),
             parse_mode=ParseMode.HTML,
             reply_markup=with_navigation(),
         )
@@ -121,11 +120,7 @@ async def answer_rank_card(
             lines.append(f"{em} L{lv}  {code(str(lo))} → {code(str(hi))}")
 
     url_kb = player_links_kb(str(p.get("faceit_url") or ""))
-    rank_text = append_share_watermark(
-        "\n".join(lines),
-        message.bot.username if message.bot else None,
-    )
-    await message.answer(rank_text, parse_mode=ParseMode.HTML, reply_markup=ctx_rank_kb(url_kb))
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=ctx_rank_kb(url_kb))
 
     # Record ELO snapshot
     if elo:

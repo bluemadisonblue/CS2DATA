@@ -79,8 +79,13 @@ def _ctx(url_markup: InlineKeyboardMarkup | None, *rows: list[InlineKeyboardButt
 
 
 def ctx_stats_kb(url_markup: InlineKeyboardMarkup | None = None) -> InlineKeyboardMarkup:
-    """After /stats: Matches · Rank / Compare · Home."""
-    return _ctx(url_markup, [_BTN_MATCHES, _BTN_RANK], [_BTN_COMPARE, _BTN_HOME])
+    """After /stats: Matches · Rank / Compare · Inline / Home."""
+    return _ctx(
+        url_markup,
+        [_BTN_MATCHES, _BTN_RANK],
+        [_BTN_COMPARE, _BTN_INLINE],
+        [_BTN_HOME],
+    )
 
 
 def ctx_rank_kb(url_markup: InlineKeyboardMarkup | None = None) -> InlineKeyboardMarkup:
@@ -104,8 +109,8 @@ def ctx_maps_kb() -> InlineKeyboardMarkup:
 
 
 def ctx_compare_kb() -> InlineKeyboardMarkup:
-    """After /compare: Stats · Matches / Home."""
-    return _ctx(None, [_BTN_STATS, _BTN_MATCHES], [_BTN_HOME])
+    """After /compare or /party: Stats · Matches / Inline · Home."""
+    return _ctx(None, [_BTN_STATS, _BTN_MATCHES], [_BTN_INLINE, _BTN_HOME])
 
 
 def ctx_scoreboard_kb(url_markup: InlineKeyboardMarkup | None = None) -> InlineKeyboardMarkup:
