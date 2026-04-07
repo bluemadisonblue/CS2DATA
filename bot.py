@@ -13,7 +13,7 @@ from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramForbiddenError
-from aiogram.types import TelegramObject
+from aiogram.types import ErrorEvent, TelegramObject, Update
 
 import database
 from cache import TTLCache
@@ -23,6 +23,7 @@ from config import (
     DB_PATH,
     FACEIT_API_KEY,
     MAX_CACHE_SIZE,
+    SENTRY_DSN,
     WATCH_POLL_INTERVAL,
 )
 from faceit_api import FaceitAPI, FaceitAPIError, parse_match_stats_row
@@ -30,8 +31,50 @@ from fsm_storage import SQLiteFSMStorage
 from commands_setup import register_bot_commands
 from handlers import setup_routers
 from middlewares.db_middleware import DbMiddleware
+from middlewares.update_logging_middleware import UpdateLoggingMiddleware
 
 logger = logging.getLogger(__name__)
+
+
+def _init_sentry() -> None:
+    if not SENTRY_DSN:
+        return
+    import sentry_sdk
+
+    release = os.getenv("GIT_SHA") or os.getenv("SOURCE_VERSION") or BOT_VERSION
+    env_name = (
+        os.getenv("SENTRY_ENVIRONMENT")
+        or os.getenv("RAILWAY_ENVIRONMENT_NAME")
+        or "production"
+    )
+    raw_rate = os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0") or "0"
+    try:
+        traces = max(0.0, min(1.0, float(raw_rate)))
+    except ValueError:
+        traces = 0.0
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        release=release,
+        environment=env_name,
+        traces_sample_rate=traces,
+    )
+    logger.info("Sentry enabled (environment=%s release=%s).", env_name, release)
+
+
+def _user_id_from_update(update: Update) -> int | None:
+    if update.message and update.message.from_user:
+        return update.message.from_user.id
+    if update.edited_message and update.edited_message.from_user:
+        return update.edited_message.from_user.id
+    if update.callback_query and update.callback_query.from_user:
+        return update.callback_query.from_user.id
+    if update.inline_query and update.inline_query.from_user:
+        return update.inline_query.from_user.id
+    if update.chosen_inline_result and update.chosen_inline_result.from_user:
+        return update.chosen_inline_result.from_user.id
+    if update.my_chat_member and update.my_chat_member.from_user:
+        return update.my_chat_member.from_user.id
+    return None
 
 
 class FaceitInjectMiddleware(BaseMiddleware):
@@ -134,6 +177,7 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    _init_sentry()
     if not BOT_TOKEN or not FACEIT_API_KEY:
         raise SystemExit(
             "Missing BOT_TOKEN or FACEIT_API_KEY. Set them as runtime environment variables. "
@@ -166,6 +210,23 @@ async def main() -> None:
         except Exception as exc:
             logger.warning("Could not register / command menu: %s", exc)
         dp = Dispatcher(storage=storage)
+
+        @dp.errors()
+        async def global_errors(event: ErrorEvent) -> None:
+            uid = _user_id_from_update(event.update)
+            logger.error(
+                "Handler error update_id=%s user_id=%s: %s",
+                event.update.update_id,
+                uid if uid is not None else "-",
+                event.exception,
+                exc_info=event.exception,
+            )
+            if SENTRY_DSN:
+                import sentry_sdk
+
+                sentry_sdk.capture_exception(event.exception)
+
+        dp.update.middleware(UpdateLoggingMiddleware())
         dp.update.middleware(FaceitInjectMiddleware(faceit))
         dp.update.middleware(DbMiddleware())
         dp.include_router(setup_routers())

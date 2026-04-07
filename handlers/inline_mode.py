@@ -10,6 +10,7 @@ import re
 import unicodedata
 
 from aiogram import Router
+from aiogram.enums import ChatAction
 from aiogram.types import (
     InlineQuery,
     InlineQueryResultArticle,
@@ -29,6 +30,20 @@ from stats_format import fetch_stats_bundle, format_stats_dashboard_html
 router = Router(name="inline")
 
 logger = logging.getLogger(__name__)
+
+
+async def _inline_typing(inline_query: InlineQuery) -> None:
+    """Typing indicator in the user's private chat with the bot (best-effort for inline latency)."""
+    bot = inline_query.bot
+    if not bot:
+        return
+    try:
+        await bot.send_chat_action(
+            chat_id=inline_query.from_user.id,
+            action=ChatAction.TYPING,
+        )
+    except Exception:
+        pass
 
 _HELP_ARTICLE_ID = "inline-stats-help"
 # Split on " vs ", "versus", " v ", "nick1vs nick2", or "nick1v nick2" (attached v).
@@ -263,6 +278,7 @@ async def _inline_faceit_stats_impl(inline_query: InlineQuery, faceit) -> None:
     parsed_vs = _try_parse_vs_query(q)
     if parsed_vs:
         nicks = parsed_vs[:PARTY_MAX_PLAYERS]
+        await _inline_typing(inline_query)
         results = await asyncio.gather(
             *(fetch_bundle_for_nickname(faceit, n) for n in nicks),
             return_exceptions=True,
@@ -364,6 +380,7 @@ async def _inline_faceit_stats_impl(inline_query: InlineQuery, faceit) -> None:
     if len(q) > 64:
         q = q[:64]
 
+    await _inline_typing(inline_query)
     try:
         bundle = await fetch_stats_bundle(faceit, nickname=q)
     except FaceitNotFoundError:

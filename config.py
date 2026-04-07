@@ -96,6 +96,10 @@ FACEIT_RETRY_MAX_DELAY_SEC: float = 10.0
 # Background match watch (seconds between polls)
 WATCH_POLL_INTERVAL: int = 300
 
+# Observability (see DEPLOY.md)
+LOG_UPDATES: bool = os.getenv("LOG_UPDATES", "1").strip().lower() in ("1", "true", "yes", "on")
+SENTRY_DSN: str = (os.getenv("SENTRY_DSN") or "").strip()
+
 # FACEIT CS2 ELO bands: (level, min_elo inclusive, max_elo inclusive). Level 10 is open-ended.
 LEVEL_ELO_RANGES: list[tuple[int, int, int]] = [
     (1, 100, 500),

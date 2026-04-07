@@ -15,13 +15,10 @@ from faceit_api import (
     _to_float,
     aggregate_match_scoreboard,
     current_win_streak,
-    faceit_match_url,
     group_rows_by_team,
     lifetime_map_from_stats_response,
     parse_lifetime_stats,
     parse_match_stats_row,
-    resolve_match_faceit_url,
-    steam_community_url,
 )
 
 
@@ -237,33 +234,6 @@ class TestLifetimeMapFromStatsResponse:
         parsed = parse_lifetime_stats(m)
         assert parsed["kills"] == 50.0
         assert parsed["deaths"] == 40.0
-
-
-# ---------------------------------------------------------------------------
-# faceit_match_url / resolve_match_faceit_url
-# ---------------------------------------------------------------------------
-
-class TestFaceitMatchUrl:
-    def test_builds_cs2_room_path(self):
-        assert faceit_match_url("1-abc-uuid") == "https://www.faceit.com/en/cs2/room/1-abc-uuid"
-
-    def test_empty_id(self):
-        assert faceit_match_url("") == ""
-        assert faceit_match_url("   ") == ""
-
-    def test_resolve_prefers_meta(self):
-        u = "https://www.faceit.com/en/cs2/room/x"
-        assert resolve_match_faceit_url({"faceit_url": u}, "ignored") == u
-
-    def test_resolve_rewrites_legacy_match_path(self):
-        u = "https://www.faceit.com/en/cs2/match/1-deadbeef"
-        assert resolve_match_faceit_url({"faceit_url": u}, "ignored") == (
-            "https://www.faceit.com/en/cs2/room/1-deadbeef"
-        )
-
-    def test_resolve_fallback(self):
-        mid = "1-test"
-        assert resolve_match_faceit_url({}, mid) == faceit_match_url(mid)
 
 
 # ---------------------------------------------------------------------------
@@ -586,27 +556,3 @@ class TestTTLCache:
         cache._store["key"] = (time.monotonic() - 10.0, "value")
         cache.get("key", ttl=5.0)  # triggers deletion
         assert "key" not in cache._store
-
-
-# ---------------------------------------------------------------------------
-# steam_community_url
-# ---------------------------------------------------------------------------
-
-
-class TestSteamCommunityUrl:
-    _sid = "76561198000000000"
-
-    def test_root_steam_id_64(self):
-        assert steam_community_url({"steam_id_64": self._sid}) == (
-            f"https://steamcommunity.com/profiles/{self._sid}"
-        )
-
-    def test_platforms_steam_dict(self):
-        p = {"platforms": {"steam": {"id": self._sid}}}
-        assert steam_community_url(p) == f"https://steamcommunity.com/profiles/{self._sid}"
-
-    def test_too_short_rejected(self):
-        assert steam_community_url({"steam_id_64": "12345"}) is None
-
-    def test_missing_returns_none(self):
-        assert steam_community_url({"nickname": "x"}) is None

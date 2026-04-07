@@ -29,6 +29,10 @@ python bot.py
 | `BOT_TOKEN` | Yes | Telegram bot token |
 | `FACEIT_API_KEY` | Yes | FACEIT Data API key |
 | `DB_PATH` | No | SQLite path. Default: `bot_data.db` next to the app. |
+| `LOG_UPDATES` | No | If `1` / `true` (default), log each update to logger `bot.requests` (kind, user_id, command/callback snippet). Set `0` to disable. |
+| `SENTRY_DSN` | No | If set, uncaught handler errors are reported to [Sentry](https://sentry.io/). See `DEPLOY.md`. |
+| `SENTRY_ENVIRONMENT` | No | Sentry environment label (default: `production`). |
+| `SENTRY_TRACES_SAMPLE_RATE` | No | `0`–`1` for performance tracing (default: `0`). |
 
 Tunable constants (cooldowns, cache size, watch interval, etc.) live in `config.py`.
 
@@ -48,6 +52,8 @@ cp .env.example .env   # fill secrets
 docker compose up -d --build
 docker compose logs -f
 ```
+
+**Backups and restore** (volume, `docker compose cp`, `sqlite3 .backup`): see [DEPLOY.md](DEPLOY.md).
 
 ## DigitalOcean App Platform
 
