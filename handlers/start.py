@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
@@ -35,6 +37,7 @@ HELP_HTML = "\n".join(
         bullet_line(f"{code('/maps')} or {code('/maps 50')} — recent map frequency"),
         bullet_line(f"{code('/trend')} — ELO history over time"),
         bullet_line(f"{code('/watch')} — toggle new-match alerts"),
+        bullet_line(f"{code('/version')} — running bot version/build"),
         "",
         bullet_line(f"{code('/about')} — version & data source"),
         bullet_line(f"{code('/help')} — this list"),
@@ -124,6 +127,26 @@ async def cmd_about(message: Message) -> None:
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     await message.answer(HELP_HTML, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb())
+
+
+@router.message(Command("version"))
+async def cmd_version(message: Message) -> None:
+    build = (
+        (os.getenv("GIT_SHA") or "").strip()
+        or (os.getenv("SOURCE_VERSION") or "").strip()
+        or "local"
+    )
+    await message.answer(
+        "\n".join(
+            [
+                section("🧩", "Runtime version"),
+                f"{bold('Version')} {code(BOT_VERSION)}",
+                f"{bold('Build')} {code(build)}",
+            ]
+        ),
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_kb(),
+    )
 
 
 @router.callback_query(F.data == "menu:help")

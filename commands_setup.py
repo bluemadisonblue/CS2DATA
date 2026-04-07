@@ -29,6 +29,7 @@ async def register_bot_commands(bot: Bot) -> None:
         BotCommand(command="maps", description="Map mix & per-map stats"),
         BotCommand(command="trend", description="ELO history chart"),
         BotCommand(command="watch", description="New-match notifications"),
+        BotCommand(command="version", description="Running version/build"),
     ]
     await bot.set_my_commands(commands)
     names = ", ".join(c.command for c in commands)
