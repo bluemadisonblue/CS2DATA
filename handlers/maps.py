@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction, ParseMode
@@ -20,7 +20,7 @@ from faceit_api import (
     parse_match_stats_row,
 )
 from keyboards.inline import ctx_maps_kb, with_navigation
-from ui_text import bold, code, esc, italic, section, sep
+from ui_text import bold, code, esc, italic, section
 
 router = Router(name="maps")
 
@@ -115,6 +115,10 @@ async def answer_maps_mix(
     items = (raw or {}).get("items") or []
     ctr: Counter[str] = Counter()
     unknown = 0
+    # Per-map wins / losses / K-D totals (only rows with a map label)
+    pmap: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"w": 0.0, "l": 0.0, "k": 0.0, "d": 0.0, "n": 0.0}
+    )
     for it in items:
         if not isinstance(it, dict):
             continue
@@ -125,15 +129,29 @@ async def answer_maps_mix(
         row = parse_match_stats_row(stats)
         m = row.get("map") or "—"
         if m and m != "—":
-            ctr[str(m)] += 1
+            name = str(m)
+            ctr[name] += 1
+            b = pmap[name]
+            b["n"] += 1.0
+            won = row.get("won")
+            if won is True:
+                b["w"] += 1.0
+            elif won is False:
+                b["l"] += 1.0
+            k = row.get("kills")
+            dth = row.get("deaths")
+            if k is not None:
+                b["k"] += float(k)
+            if dth is not None:
+                b["d"] += float(dth)
         else:
             unknown += 1
 
     nick = esc(user["faceit_nickname"])
     lines: list[str] = [
         section("🗺", "Recent map mix"),
-        f"<b>{nick}</b>  ·  {italic(f'last {len(items)} matches from API')}",
-        sep(26),
+        f"<b>{nick}</b>  ·  {italic(f'last {len(items)} matches')}",
+        "",
     ]
 
     if not ctr:
@@ -145,6 +163,62 @@ async def answer_maps_mix(
             lines.append(f"{code(str(cnt) + '×')}  {esc(name)}")
         if len(ctr) > 12:
             lines.append(italic(f"+ {len(ctr) - 12} more map(s) in the data"))
+
+        # Per-map W/L, win%, K/D (aggregated from the same rows)
+        lines.append("")
+        lines.append(section("📈", "Per-map from this batch"))
+        min_decided = 2  # need at least this many W+L to rank best/worst
+        ranked: list[tuple[str, float, float, str]] = []
+        for name, b in pmap.items():
+            w, l = int(b["w"]), int(b["l"])
+            decided = w + l
+            kd_s = "—"
+            if b["d"] > 0:
+                kd_s = f"{b['k'] / b['d']:.2f}"
+            elif b["k"] > 0:
+                kd_s = "inf"
+            win_pct: float | None = None
+            if decided > 0:
+                win_pct = 100.0 * w / decided
+            wl_s = f"{w}-{l}" if decided else "—"
+            pct_s = f"{win_pct:.0f}%" if win_pct is not None else "—"
+            line = (
+                f"{esc(name)}  ·  {code(str(int(b['n'])) + '×')}  "
+                f"{bold(wl_s)}  {italic(pct_s)}  K/D {code(kd_s)}"
+            )
+            ranked.append((name, win_pct if win_pct is not None else -1.0, float(decided), line))
+        ranked.sort(key=lambda t: (-t[2], t[0]))  # by games played, then name
+        for _, __, ___, line in ranked[:10]:
+            lines.append(line)
+        if len(ranked) > 10:
+            lines.append(italic(f"+ {len(ranked) - 10} more map(s)"))
+
+        candidates = [
+            (n, wp, dec)
+            for n, wp, dec, _ in ranked
+            if wp >= 0 and dec >= min_decided
+        ]
+        if len(candidates) >= 1:
+            best = max(candidates, key=lambda x: (x[1], x[2]))
+            worst = min(candidates, key=lambda x: (x[1], -x[2]))
+            lines.append("")
+            if len(candidates) == 1:
+                lines.append(
+                    f"{bold('Map highlight')} {esc(best[0])} — {code(f'{best[1]:.0f}%')} win rate "
+                    f"({italic(f'≥{min_decided} decided games on this map')})"
+                )
+            else:
+                lines.append(
+                    f"{bold('Best map')} {esc(best[0])} ({code(f'{best[1]:.0f}%')})  ·  "
+                    f"{bold('Worst')} {esc(worst[0])} ({code(f'{worst[1]:.0f}%')})"
+                )
+        elif pmap:
+            lines.append("")
+            lines.append(
+                italic(
+                    f"Not enough decided games per map (need ≥{min_decided} W/L on a map) for best/worst labels."
+                )
+            )
     if unknown:
         lines.append("")
         lines.append(italic(f"{unknown} row(s) without a map label"))

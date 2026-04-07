@@ -11,6 +11,8 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from faceit_api import faceit_match_url
+
 # ---------------------------------------------------------------------------
 # Shared button definitions (reused across multiple keyboards)
 # ---------------------------------------------------------------------------
@@ -33,6 +35,20 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     """Primary navigation — used only for start / help screens."""
     b = InlineKeyboardBuilder()
     b.row(_BTN_STATS, _BTN_PROFILE)
+    b.row(_BTN_MATCHES, _BTN_RANK)
+    b.row(_BTN_MAPS, _BTN_COMPARE)
+    b.row(_BTN_REGISTER, _BTN_HELP)
+    b.row(_BTN_HOME)
+    return b.as_markup()
+
+
+def register_success_kb() -> InlineKeyboardMarkup:
+    """After linking: pinned ⭐ My stats + same shortcuts as the main menu."""
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="⭐ My stats", callback_data="nav:stats"),
+        _BTN_PROFILE,
+    )
     b.row(_BTN_MATCHES, _BTN_RANK)
     b.row(_BTN_MAPS, _BTN_COMPARE)
     b.row(_BTN_REGISTER, _BTN_HELP)
@@ -147,10 +163,11 @@ def with_match_boards_and_nav(
 # ---------------------------------------------------------------------------
 
 def match_faceit_kb(faceit_url: str | None) -> InlineKeyboardMarkup | None:
-    if not faceit_url:
+    """Match page on FACEIT (same primary label as player profile links)."""
+    if not (faceit_url or "").strip():
         return None
     b = InlineKeyboardBuilder()
-    b.row(InlineKeyboardButton(text="🌐 Match on FACEIT", url=faceit_url))
+    b.row(InlineKeyboardButton(text="🌐 Open on FACEIT", url=faceit_url))
     return b.as_markup()
 
 
@@ -182,7 +199,7 @@ def unlink_confirm_kb() -> InlineKeyboardMarkup:
 
 def match_boards_kb(entries: list[tuple[str, str]]) -> InlineKeyboardMarkup | None:
     """
-    One full-width button per match (same order as the list above).
+    Per match: scoreboard (callback) + FACEIT URL (same order as the list above).
     callback_data m:{match_id} (must stay ≤64 bytes). Button text ≤64 chars.
     """
     rows = [(mid, lab) for mid, lab in entries if mid and len(f"m:{mid}") <= 64]
@@ -193,5 +210,12 @@ def match_boards_kb(entries: list[tuple[str, str]]) -> InlineKeyboardMarkup | No
         text = lab.strip() if lab else "·"
         if len(text) > 64:
             text = text[:63] + "…"
-        b.row(InlineKeyboardButton(text=text, callback_data=f"m:{mid}"))
+        url = faceit_match_url(mid)
+        if url:
+            b.row(
+                InlineKeyboardButton(text=text, callback_data=f"m:{mid}"),
+                InlineKeyboardButton(text="🌐 Open", url=url),
+            )
+        else:
+            b.row(InlineKeyboardButton(text=text, callback_data=f"m:{mid}"))
     return b.as_markup()

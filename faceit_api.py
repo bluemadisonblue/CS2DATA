@@ -66,6 +66,21 @@ def _pick_lifetime_value(lifetime: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _segment_sort_key(segment: Any) -> tuple[str, str]:
+    """Stable ordering so merging segment stats does not depend on API list order."""
+    if not isinstance(segment, dict):
+        return ("", "")
+    name = str(
+        segment.get("label")
+        or segment.get("name")
+        or segment.get("mode")
+        or segment.get("type")
+        or ""
+    )
+    sid = str(segment.get("segment_id") or segment.get("id") or "")
+    return (name, sid)
+
+
 def lifetime_map_from_stats_response(st: dict[str, Any] | None) -> dict[str, Any]:
     """
     Build one label→value map from GET /players/{id}/stats/{game}.
@@ -92,7 +107,7 @@ def lifetime_map_from_stats_response(st: dict[str, Any] | None) -> dict[str, Any
 
     segments = st.get("segments")
     if isinstance(segments, list):
-        for seg in segments:
+        for seg in sorted(segments, key=_segment_sort_key):
             if not isinstance(seg, dict):
                 continue
             raw = seg.get("stats")
@@ -405,6 +420,39 @@ class FaceitAPI:
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         return await self._cached_get(key, _TTL_MATCH_STATS, path, params=params)
 
+    async def get_dashboard_bundle(
+        self, player_id: str, recent_limit: int
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """
+        Player profile + lifetime stats + recent match rows as **one** snapshot.
+
+        The dashboard used to call three separately cached endpoints (different TTLs),
+        which mixed fresh ELO with stale K/D or vice versa. One cache entry keeps
+        combat averages, totals, and recent form aligned until the next refresh.
+        """
+        key = f"dash:{player_id}:{recent_limit}"
+        ttl = min(_TTL_PLAYER, _TTL_MATCH_STATS, _TTL_LIFETIME)
+        if self._cache is not None:
+            hit = self._cache.get(key, ttl)
+            if hit is not None:
+                return hit["player"], hit["lifetime"], hit["recent"]
+        path_p = f"/players/{player_id}"
+        path_st = f"/players/{player_id}/stats/{GAME_ID}"
+        path_m = f"/players/{player_id}/games/{GAME_ID}/stats"
+        params_m: dict[str, Any] = {"limit": recent_limit, "offset": 0}
+        p, st, recent_raw = await asyncio.gather(
+            self._request_json("GET", path_p),
+            self._request_json("GET", path_st),
+            self._request_json("GET", path_m, params=params_m),
+        )
+        if self._cache is not None:
+            bundle = {"player": p, "lifetime": st, "recent": recent_raw}
+            self._cache.set(key, bundle)
+            self._cache.set(f"player:{player_id}", p)
+            self._cache.set(f"lifetime:{player_id}", st)
+            self._cache.set(f"match_stats:{player_id}:{recent_limit}:0", recent_raw)
+        return p, st, recent_raw
+
     async def get_player_history(self, player_id: str, limit: int = 10) -> dict[str, Any]:
         key = f"history:{player_id}:{limit}"
         params = {"game": GAME_ID, "limit": limit, "offset": 0}
@@ -420,6 +468,24 @@ class FaceitAPI:
         """Match metadata: competition, status, teams, results, region, urls."""
         key = f"match_meta:{match_id}"
         return await self._cached_get(key, _TTL_MATCH_META, f"/matches/{match_id}")
+
+
+def faceit_match_url(match_id: str) -> str:
+    """Canonical CS2 match page on the FACEIT website (fallback when API omits a URL)."""
+    mid = (match_id or "").strip()
+    if not mid:
+        return ""
+    return f"https://www.faceit.com/en/cs2/match/{mid}"
+
+
+def resolve_match_faceit_url(meta: dict[str, Any] | None, match_id: str) -> str:
+    """Prefer URL from match payload; otherwise build from *match_id*."""
+    if isinstance(meta, dict):
+        for key in ("faceit_url", "faceitUrl", "url"):
+            v = meta.get(key)
+            if isinstance(v, str) and v.strip().lower().startswith("http"):
+                return v.strip()
+    return faceit_match_url(match_id)
 
 
 def parse_match_stats_row(stats: dict[str, Any]) -> dict[str, Any]:

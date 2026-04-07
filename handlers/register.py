@@ -16,7 +16,7 @@ from faceit_api import (
     FaceitRateLimitError,
     FaceitUnavailableError,
 )
-from keyboards.inline import register_confirm_kb, unlink_confirm_kb, with_navigation
+from keyboards.inline import register_confirm_kb, register_success_kb, unlink_confirm_kb, with_navigation
 from ui_text import bold, code
 
 router = Router(name="register")
@@ -101,7 +101,7 @@ async def cmd_register(
                 f"You are already connected as {code(resolved_nick)}.\n"
                 f"Use the buttons below to open stats or matches.",
                 parse_mode=ParseMode.HTML,
-                reply_markup=with_navigation(),
+                reply_markup=register_success_kb(),
             )
             return
 
@@ -124,9 +124,9 @@ async def cmd_register(
     await message.answer(
         f"{bold('You are set!')}\n"
         f"Linked as {code(resolved_nick)}.\n"
-        f"Try {code('/stats')} or the buttons below.",
+        f"Try {code('/stats')} or tap ⭐ My stats below.",
         parse_mode=ParseMode.HTML,
-        reply_markup=with_navigation(),
+        reply_markup=register_success_kb(),
     )
 
 
@@ -161,7 +161,7 @@ async def cb_reg_confirm(
         await callback.message.answer(
             f"{bold('Profile updated')}\nNow linked as {code(nick)}.",
             parse_mode=ParseMode.HTML,
-            reply_markup=with_navigation(),
+            reply_markup=register_success_kb(),
         )
     await callback.answer("Saved")
 

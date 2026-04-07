@@ -7,7 +7,6 @@ import html
 import logging
 import re
 import time
-from datetime import datetime, timezone
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction, ParseMode
@@ -24,6 +23,7 @@ from faceit_api import (
     aggregate_match_scoreboard,
     group_rows_by_team,
     parse_match_stats_row,
+    resolve_match_faceit_url,
 )
 from formatting import flag_emoji, pick_history_meta
 from stats_format import fetch_stats_bundle, format_stats_dashboard_html
@@ -38,7 +38,7 @@ from keyboards.inline import (
     with_match_boards_and_nav,
     with_navigation,
 )
-from ui_text import bold, code, esc, italic, section, sep
+from ui_text import bold, code, esc, italic, section
 
 router = Router(name="stats")
 
@@ -57,27 +57,56 @@ async def _cooldown_block(user_id: int) -> str | None:
     return None
 
 
-def _fmt_ts_short(val) -> str:
-    if val is None:
-        return "—"
-    dt: datetime | None = None
-    if isinstance(val, str):
-        try:
-            dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-        except ValueError:
-            s = val.strip()
-            return s[:10] if len(s) > 10 else s
-    if dt is None:
-        try:
-            ts = float(val)
-            if ts > 1e12:
-                ts /= 1000.0
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-        except (TypeError, ValueError, OSError):
-            return "—"
-    return dt.astimezone(timezone.utc).strftime("%d %b")
+def _roster_pre_block(rows: list[dict], my_pid: str) -> str:
+    """Fixed-width roster for <pre> (aligned K/D/A/HS)."""
+    lines: list[str] = []
+    for r in rows:
+        hs = r["hs_pct"]
+        hs_s = f"{hs:.0f}%" if hs is not None else "—"
+        mark = "→ " if r["player_id"] == my_pid else "   "
+        nick = str(r["nickname"])
+        if len(nick) > 14:
+            nick = nick[:13] + "…"
+        nick = nick.ljust(14)
+        line = (
+            f"{mark}{nick} {int(r['kills']):>2} {int(r['deaths']):>2} "
+            f"{int(r['assists']):>2}  {hs_s:>4}"
+        )
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _match_scoreboard_header_lines(meta: dict) -> list[str]:
+    """Title + one line: event · region/status · score (no raw match id)."""
+    lines: list[str] = [section("🧾", "Match scoreboard")]
+    if not meta:
+        return lines
+    bits: list[str] = []
+    comp = meta.get("competition_name")
+    if comp:
+        bits.append(italic(str(comp)[:80]))
+    reg = meta.get("region")
+    st = meta.get("status")
+    meta_bits: list[str] = []
+    if reg:
+        meta_bits.append(code(str(reg)))
+    if st:
+        meta_bits.append(code(str(st)))
+    if meta_bits:
+        bits.append(" · ".join(meta_bits))
+    res = meta.get("results")
+    if isinstance(res, dict) and res.get("score"):
+        sc = res["score"]
+        if isinstance(sc, dict) and sc:
+            try:
+                vs = sorted((int(x) for x in sc.values()), reverse=True)
+                if len(vs) >= 2:
+                    bits.append(f"{bold('Score')} {code(f'{vs[0]} – {vs[1]}')}")
+            except (TypeError, ValueError):
+                pass
+    if bits:
+        lines.append(" · ".join(bits))
+    return lines
 
 
 async def _need_user(message: Message, db, *, actor_telegram_id: int | None = None):
@@ -150,58 +179,22 @@ async def send_match_scoreboard(
 
     team_a, team_b = group_rows_by_team(rows)
 
-    header: list[str] = [section("🧾", "Match scoreboard"), code(mid)]
-    if meta:
-        comp = meta.get("competition_name")
-        reg = meta.get("region")
-        st = meta.get("status")
-        if comp:
-            header.append(f"{bold('Event')} {italic(str(comp)[:90])}")
-        if reg or st:
-            bits = []
-            if reg:
-                bits.append(bold(str(reg)))
-            if st:
-                bits.append(code(str(st)))
-            header.append(" · ".join(bits))
-        res = meta.get("results")
-        if isinstance(res, dict) and res.get("score"):
-            sc = res["score"]
-            if isinstance(sc, dict) and sc:
-                try:
-                    vs = sorted((int(x) for x in sc.values()), reverse=True)
-                    if len(vs) >= 2:
-                        header.append(f"{bold('Score')} {code(f'{vs[0]} – {vs[1]}')}")
-                except (TypeError, ValueError):
-                    pass
-
-    def fmt_row(r: dict) -> str:
-        hs = r["hs_pct"]
-        hs_s = f"{hs:.0f}%" if hs is not None else "—"
-        mark = "👉 " if r["player_id"] == my_pid else "   "
-        return (
-            f"{mark}<b>{esc(r['nickname'])}</b>  K {code(str(int(r['kills'])))}  "
-            f"D {code(str(int(r['deaths'])))}  A {code(str(int(r['assists'])))}  "
-            f"HS {code(hs_s)}"
-        )
-
-    body: list[str] = header + ["", section("👥", "Rosters"), ""]
+    body: list[str] = _match_scoreboard_header_lines(meta) + [""]
     if team_a:
         body.append(bold("Team A"))
-        for r in team_a:
-            body.append(fmt_row(r))
+        body.append(f"<pre>{html.escape(_roster_pre_block(team_a, my_pid))}</pre>")
     if team_b:
         body.append("")
         body.append(bold("Team B"))
-        for r in team_b:
-            body.append(fmt_row(r))
+        body.append(f"<pre>{html.escape(_roster_pre_block(team_b, my_pid))}</pre>")
     if not team_b and team_a:
-        body.append(italic("Only one faction in payload (hub/scrim or partial data)."))
+        body.append(italic("Only one team in payload."))
 
+    faceit_url = resolve_match_faceit_url(meta, mid)
     await message.answer(
         "\n".join(body),
         parse_mode=ParseMode.HTML,
-        reply_markup=ctx_scoreboard_kb(match_faceit_kb(meta.get("faceit_url"))),
+        reply_markup=ctx_scoreboard_kb(match_faceit_kb(faceit_url)),
     )
 
 
@@ -345,7 +338,6 @@ async def answer_matches_list(
 
     items = raw.get("items") or []
     all_board_entries: list[tuple[str, str]] = []
-    all_pre_rows: list[str] = []
     nick_label = esc(user["faceit_nickname"])
 
     for idx, it in enumerate(items, start=1):
@@ -360,9 +352,7 @@ async def answer_matches_list(
         wl = "W" if row["won"] is True else ("L" if row["won"] is False else "?")
         kd_val = row["kd"]
         kd_s = f"{kd_val:.2f}" if kd_val is not None else "—"
-        when_s = _fmt_ts_short(row["finished_at"])
         map_raw = (row["map"] or "—").strip() or "—"
-        map_cell = map_raw if len(map_raw) <= 16 else map_raw[:15] + "…"
 
         score_s = "—"
         if mid and mid in hist_map:
@@ -372,23 +362,20 @@ async def answer_matches_list(
         if len(score_s) > 7:
             score_s = score_s[:6] + "…"
 
-        all_pre_rows.append(
-            f"{idx:2d}   {wl:^3}   {map_cell:<16}   {kd_s:>5}   {score_s:>7}   {when_s:>7}"
-        )
+        if not mid:
+            continue
 
-        if mid:
-            wl_e = "✅" if row["won"] is True else ("❌" if row["won"] is False else "❔")
-            map_btn = map_raw if map_raw != "—" else "?"
-            tail = score_s if score_s != "—" else f"K/D {kd_s}"
-            label = f"{idx:02d} {wl_e} {map_btn} · {tail}"
-            while len(label) > 64 and len(map_btn) > 5:
-                map_btn = map_btn[:-2] + "…" if len(map_btn) > 2 else "?"
-                label = f"{idx:02d} {wl_e} {map_btn} · {tail}"
-            if len(label) > 64:
-                label = label[:64]
-            all_board_entries.append((str(mid), label))
+        map_btn = map_raw if map_raw != "—" else "?"
+        tail = score_s if score_s != "—" else f"K/D {kd_s}"
+        label = f"{idx:02d} {wl} {map_btn} · {tail}"
+        while len(label) > 64 and len(map_btn) > 5:
+            map_btn = map_btn[:-2] + "…" if len(map_btn) > 2 else "?"
+            label = f"{idx:02d} {wl} {map_btn} · {tail}"
+        if len(label) > 64:
+            label = label[:64]
+        all_board_entries.append((str(mid), label))
 
-    if not all_pre_rows:
+    if not all_board_entries:
         await message.answer(
             "\n".join([section("📜", "Recent matches"), f"{bold('Player')}: {nick_label}", "", italic("No recent matches returned by FACEIT.")]),
             parse_mode=ParseMode.HTML,
@@ -396,27 +383,18 @@ async def answer_matches_list(
         )
         return
 
-    total_rows = len(all_pre_rows)
+    total_rows = len(all_board_entries)
     total_pages = max(1, (total_rows + MATCHES_PAGE_SIZE - 1) // MATCHES_PAGE_SIZE)
     page = min(page, total_pages)
     start = (page - 1) * MATCHES_PAGE_SIZE
     end = start + MATCHES_PAGE_SIZE
 
-    page_rows = all_pre_rows[start:end]
     page_entries = all_board_entries[start:end]
-
-    table_header = (
-        f"{'#':>2}   {'W/L':^3}   {'Map':<16}   {'K/D':>5}   {'Score':>7}   {'When':>7}\n"
-        f"{'─' * 2}   {'─' * 3}   {'─' * 16}   {'─' * 5}   {'─' * 7}   {'─' * 7}"
-    )
-    pre_html = "<pre>" + html.escape(table_header + "\n" + "\n".join(page_rows)) + "</pre>"
 
     caption_lines = [
         section("📜", "Recent matches"),
-        f"🎮 <b>{nick_label}</b> · {total_rows} game{'s' if total_rows != 1 else ''} total",
-        italic("Tap a row button for the full scoreboard."),
-        "",
-        pre_html,
+        f"🎮 <b>{nick_label}</b> · {total_rows} game{'s' if total_rows != 1 else ''}",
+        italic("Row · scoreboard  ·  🌐 FACEIT"),
     ]
     boards = match_boards_kb(page_entries)
     pagination = matches_pagination_kb(page, total_pages, limit)

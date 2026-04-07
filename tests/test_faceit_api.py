@@ -15,10 +15,12 @@ from faceit_api import (
     _to_float,
     aggregate_match_scoreboard,
     current_win_streak,
+    faceit_match_url,
     group_rows_by_team,
     lifetime_map_from_stats_response,
     parse_lifetime_stats,
     parse_match_stats_row,
+    resolve_match_faceit_url,
 )
 
 
@@ -190,6 +192,21 @@ class TestParseLifetimeStats:
 
 
 class TestLifetimeMapFromStatsResponse:
+    def test_segment_merge_order_stable(self):
+        """Reordering segments should not change merged values (same keys win by merge rules)."""
+        st_a = {
+            "lifetime": {},
+            "segments": [
+                {"label": "z", "stats": {"Average K/D Ratio": "1.0"}},
+                {"label": "a", "stats": {"Average K/D Ratio": "9.0"}},
+            ],
+        }
+        st_b = {
+            "lifetime": {},
+            "segments": list(reversed(st_a["segments"])),
+        }
+        assert lifetime_map_from_stats_response(st_a) == lifetime_map_from_stats_response(st_b)
+
     def test_merges_segment_stats_dict(self):
         st = {
             "lifetime": {"Matches": "10", "Win Rate %": "50"},
@@ -219,6 +236,27 @@ class TestLifetimeMapFromStatsResponse:
         parsed = parse_lifetime_stats(m)
         assert parsed["kills"] == 50.0
         assert parsed["deaths"] == 40.0
+
+
+# ---------------------------------------------------------------------------
+# faceit_match_url / resolve_match_faceit_url
+# ---------------------------------------------------------------------------
+
+class TestFaceitMatchUrl:
+    def test_builds_cs2_path(self):
+        assert faceit_match_url("1-abc-uuid") == "https://www.faceit.com/en/cs2/match/1-abc-uuid"
+
+    def test_empty_id(self):
+        assert faceit_match_url("") == ""
+        assert faceit_match_url("   ") == ""
+
+    def test_resolve_prefers_meta(self):
+        u = "https://www.faceit.com/en/cs2/match/x"
+        assert resolve_match_faceit_url({"faceit_url": u}, "ignored") == u
+
+    def test_resolve_fallback(self):
+        mid = "1-test"
+        assert resolve_match_faceit_url({}, mid) == faceit_match_url(mid)
 
 
 # ---------------------------------------------------------------------------

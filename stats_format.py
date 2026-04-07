@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from config import RECENT_FORM_LIMIT, level_tier_emoji
@@ -15,7 +14,7 @@ from faceit_api import (
     parse_lifetime_stats,
 )
 from formatting import flag_emoji, recent_form_badge
-from ui_text import bold, code, esc, italic, section, sep
+from ui_text import bold, code, esc, italic, section
 
 
 async def fetch_stats_bundle(
@@ -36,11 +35,7 @@ async def fetch_stats_bundle(
     else:
         pid = player_id  # type: ignore[assignment]
 
-    p, st, recent_raw = await asyncio.gather(
-        faceit.get_player_by_id(pid),
-        faceit.get_player_stats_lifetime(pid),
-        faceit.get_player_match_stats(pid, limit=RECENT_FORM_LIMIT, offset=0),
-    )
+    p, st, recent_raw = await faceit.get_dashboard_bundle(pid, RECENT_FORM_LIMIT)
 
     g = extract_cs2_game(p) or {}
     elo = int(g.get("faceit_elo") or 0)
@@ -118,40 +113,32 @@ async def fetch_stats_bundle(
 
 
 def format_stats_dashboard_html(bundle: dict[str, Any]) -> str:
-    """HTML body identical to the /stats dashboard message."""
+    """HTML body for the /stats dashboard — compact, no decorative separators."""
     nick_disp = esc(bundle["nickname"])
     lines: list[str] = [
         section("📊", "CS2 dashboard"),
         f"{bundle['tier']} <b>{nick_disp}</b> {bundle['flg']}".rstrip(),
-        sep(26),
-        section("🎯", "Overview"),
-        f"{bold('ELO')} {code(str(bundle['elo']))}   {bold('Level')} {code(str(bundle['level']))}",
+        "",
+        f"{bold('ELO')} {code(str(bundle['elo']))}   {bold('Level')} {code(str(bundle['level']))}   "
         f"{bold('Region')} {code(bundle['region'])}",
-        sep(26),
-        section("⚔️", "Combat averages"),
-        f"{bold('Win rate')} {code(bundle['wr_s'])}   {bold('K/D')} {code(bundle['kd_s'])}   {bold('HS%')} {code(bundle['hs_s'])}",
-        f"{bold('K/R')} {code(bundle['kr_s'])}   {bold('MVPs')} {code(bundle['mvp_t'])}",
-        f"{bold('Avg K')} {code(bundle['avg_k'])}   {bold('Avg D')} {code(bundle['avg_d'])}",
-        sep(26),
-        section("📈", "Totals"),
-        f"{bold('Matches')} {code(bundle['mp_s'])}   {bold('W : L')} {code(bundle['wl_s'])}   {bold('Best streak')} {code(bundle['streak_s'])}",
-        f"{bold('K / D / A')} {code(bundle['kills_t'])} / {code(bundle['deaths_t'])} / {code(bundle['ast_t'])}   {bold('Rounds')} {code(bundle['rnd_t'])}",
-        sep(26),
-        section("🔥", "Recent form"),
-        italic("Each block is one match. Reading left → right: newest → older."),
+        "",
+        f"{bold('Combat')}  WR {code(bundle['wr_s'])}  ·  K/D {code(bundle['kd_s'])}  ·  "
+        f"HS {code(bundle['hs_s'])}  ·  K/R {code(bundle['kr_s'])}",
+        f"{bold('Per game')}  Avg K {code(bundle['avg_k'])}  ·  Avg D {code(bundle['avg_d'])}  ·  "
+        f"MVPs {code(bundle['mvp_t'])}",
+        "",
+        f"{bold('Totals')}  {code(bundle['mp_s'])} matches  ·  W/L {code(bundle['wl_s'])}  ·  "
+        f"best streak {code(bundle['streak_s'])}",
+        f"{bold('KDA')} {code(bundle['kills_t'])} / {code(bundle['deaths_t'])} / {code(bundle['ast_t'])}   "
+        f"{bold('Rounds')} {code(bundle['rnd_t'])}",
+        "",
+        section("🔥", "Form"),
     ]
     form_raw = bundle["form"]
     n_show = int(bundle.get("recent_form_n") or 0)
     if form_raw == "—" or n_show == 0:
-        lines.append(italic("No recent match rows returned by FACEIT for this view."))
+        lines.append(italic("No recent matches in this API batch."))
     else:
-        cap = RECENT_FORM_LIMIT
-        lines.append(
-            italic(
-                f"{n_show} match{'es' if n_show != 1 else ''} shown "
-                f"(up to {cap} from the API)."
-            )
-        )
         lines.append(f"<code>{form_raw}</code>")
 
     streak = bundle.get("streak")
@@ -163,14 +150,6 @@ def format_stats_dashboard_html(bundle: dict[str, Any]) -> str:
         else:
             phrase = f"{n} loss in a row" if n == 1 else f"{n} losses in a row"
             mark = "🔴"
-        lines.append("")
-        lines.append(f"{bold('Active streak')} {mark} {code(phrase)}")
+        lines.append(f"{bold('Streak')} {mark} {code(phrase)}")
 
-    lines.append("")
-    lines.append(
-        italic(
-            "Legend — 🟩 win · 🟥 loss · ⬜ unknown · streak counts consecutive "
-            "results from your latest match backward."
-        )
-    )
     return "\n".join(lines)
