@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -74,8 +75,8 @@ async def init_db(db_path: str = DB_PATH) -> None:
         for sql, _ in _MIGRATIONS:
             try:
                 await db.execute(sql)
-            except Exception:
-                pass  # column already exists
+            except sqlite3.OperationalError:
+                pass  # duplicate column / already migrated
         await db.commit()
 
 

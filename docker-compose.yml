@@ -1,6 +1,3 @@
-# Run on a Droplet: docker compose up -d
-# Copy .env next to this file (BOT_TOKEN, FACEIT_API_KEY). DB persists in the named volume.
-
 services:
   bot:
     build: .

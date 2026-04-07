@@ -1,13 +1,6 @@
-# DigitalOcean App Platform — Worker (no HTTP).
-# 1. Push this repo to GitHub and connect it in DO Apps.
-# 2. Create app from spec: doctl apps create --spec .do/app.yaml
-#    Or paste into the UI: Settings → App Spec.
-# 3. Set secrets in the dashboard (or replace placeholder values):
-#    BOT_TOKEN, FACEIT_API_KEY
-# 4. App Platform has NO attachable persistent volumes — SQLite is lost on each
-#    deploy. For durable DB use a Droplet + docker-compose.yml instead.
-#
-# Edit `github.repo` and `github.branch` below to match your repository.
+# DigitalOcean App Platform — Worker (long polling). Set secrets in the UI.
+# doctl: doctl apps create --spec .do/app.yaml
+# SQLite on App Platform is ephemeral (lost on redeploy). Use a Droplet + docker-compose for persistence.
 
 name: cs2-faceit-bot
 region: fra
