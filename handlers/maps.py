@@ -20,7 +20,7 @@ from faceit_api import (
     parse_match_stats_row,
 )
 from keyboards.inline import ctx_maps_kb, with_navigation
-from ui_text import bold, code, esc, italic, section
+from ui_text import append_share_watermark, bold, code, esc, italic, section
 
 router = Router(name="maps")
 
@@ -223,8 +223,12 @@ async def answer_maps_mix(
         lines.append("")
         lines.append(italic(f"{unknown} row(s) without a map label"))
 
-    await message.answer(
+    maps_text = append_share_watermark(
         "\n".join(lines),
+        message.bot.username if message.bot else None,
+    )
+    await message.answer(
+        maps_text,
         parse_mode=ParseMode.HTML,
         reply_markup=ctx_maps_kb(),
     )

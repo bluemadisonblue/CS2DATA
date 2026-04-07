@@ -16,7 +16,7 @@ from config import COOLDOWN_SEC, PARTY_MAX_PLAYERS
 from faceit_api import FaceitAPIError, FaceitNotFoundError, FaceitRateLimitError, FaceitUnavailableError
 from .compare import fetch_bundle_for_nickname
 from keyboards.inline import ctx_compare_kb, with_navigation
-from ui_text import bold, code, italic, section
+from ui_text import append_share_watermark, bold, code, italic, section
 
 router = Router(name="party")
 
@@ -144,8 +144,12 @@ async def cmd_party(message: Message, command: CommandObject, faceit) -> None:
         f"{section('👥', 'Party compare')}\n"
         f"{italic(str(len(bundles)) + ' players · CS2 FACEIT stats')}\n"
     )
-    await message.answer(
+    out = append_share_watermark(
         header + body + extra,
+        message.bot.username if message.bot else None,
+    )
+    await message.answer(
+        out,
         parse_mode=ParseMode.HTML,
         reply_markup=ctx_compare_kb(),
     )

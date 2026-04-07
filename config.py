@@ -71,7 +71,7 @@ def _compute_db_path() -> str:
 BOT_VERSION: str = "1.4.1"
 
 BOT_TOKEN: str = (os.getenv("BOT_TOKEN") or "").strip()
-# Optional; used for /stats dashboard footer if handlers do not pass bot.username.
+# Optional fallback for append_share_watermark() when bot.username is unavailable.
 BOT_USERNAME: str = (os.getenv("BOT_USERNAME") or "").strip().lstrip("@")
 FACEIT_API_KEY: str = (os.getenv("FACEIT_API_KEY") or "").strip()
 FACEIT_BASE_URL: str = "https://open.faceit.com/data/v4"

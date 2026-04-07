@@ -24,7 +24,7 @@ from faceit_api import (
 )
 from formatting import flag_emoji
 from keyboards.inline import ctx_compare_kb, with_navigation
-from ui_text import bold, code, italic, section
+from ui_text import append_share_watermark, bold, code, italic, section
 
 router = Router(name="compare")
 
@@ -277,9 +277,13 @@ async def cmd_compare(message: Message, command: CommandObject, db, faceit) -> N
         f"<b>{html.escape(opp['nickname'])}</b> {of}\n"
     )
     body = _compare_table(you, opp)
+    out = append_share_watermark(
+        header + body,
+        message.bot.username if message.bot else None,
+    )
 
     await message.answer(
-        header + body,
+        out,
         parse_mode=ParseMode.HTML,
         reply_markup=ctx_compare_kb(),
     )

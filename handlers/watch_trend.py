@@ -14,7 +14,7 @@ from aiogram.types import Message
 import database as dbmod
 from config import COOLDOWN_SEC, WATCH_POLL_INTERVAL
 from keyboards.inline import with_navigation
-from ui_text import bold, code, esc, italic, section, sep
+from ui_text import append_share_watermark, bold, code, esc, italic, section, sep
 
 router = Router(name="watch_trend")
 
@@ -165,7 +165,11 @@ async def cmd_trend(message: Message, db) -> None:
         if len(snaps) > 12:
             lines.append(italic(f"… +{len(snaps) - 12} older snapshot(s) in DB"))
 
-        await message.answer("\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=with_navigation())
+        trend_text = append_share_watermark(
+            "\n".join(lines),
+            message.bot.username if message.bot else None,
+        )
+        await message.answer(trend_text, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
     except Exception as exc:
         logger.exception("cmd_trend failed: %s", exc)
         await message.answer(

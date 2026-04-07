@@ -22,7 +22,7 @@ from faceit_api import (
 )
 from formatting import flag_emoji
 from keyboards.inline import ctx_profile_kb, player_links_kb, with_navigation
-from ui_text import bold, code, esc, section, sep
+from ui_text import append_share_watermark, bold, code, esc, section, sep
 
 router = Router(name="profile")
 
@@ -123,14 +123,16 @@ async def answer_profile_card(
         lines.append(code(steam))
 
     detail = "\n".join(lines)
+    bot_u = message.bot.username if message.bot else None
+    detail_wm = append_share_watermark(detail, bot_u)
     avatar = p.get("avatar")
     markup = ctx_profile_kb(url_kb)
 
-    if avatar and str(avatar).startswith("http") and len(detail) <= _CAPTION_MAX:
+    if avatar and str(avatar).startswith("http") and len(detail_wm) <= _CAPTION_MAX:
         try:
             await message.answer_photo(
                 photo=URLInputFile(str(avatar)),
-                caption=detail,
+                caption=detail_wm,
                 parse_mode=ParseMode.HTML,
                 reply_markup=markup,
             )
@@ -143,7 +145,7 @@ async def answer_profile_card(
             )
 
     # No avatar, photo failed, or caption too long for one media message
-    await message.answer(detail, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await message.answer(detail_wm, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
 @router.message(Command("profile"))

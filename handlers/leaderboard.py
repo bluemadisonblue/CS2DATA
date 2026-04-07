@@ -14,7 +14,7 @@ import database as dbmod
 from config import COOLDOWN_SEC, LEADERBOARD_MAX_USERS, level_tier_emoji
 from faceit_api import FaceitAPIError, FaceitNotFoundError, extract_cs2_game
 from keyboards.inline import with_navigation
-from ui_text import bold, code, italic, section, sep
+from ui_text import append_share_watermark, bold, code, italic, section, sep
 
 router = Router(name="leaderboard")
 
@@ -90,8 +90,12 @@ async def cmd_leaderboard(message: Message, db, faceit) -> None:
             f"{med} <b>{nick_e}</b>  {tier} L{code(str(lvl))}  ELO {code(str(elo_val))}"
         )
 
-    await message.answer(
+    lb_text = append_share_watermark(
         "\n".join(lines),
+        message.bot.username if message.bot else None,
+    )
+    await message.answer(
+        lb_text,
         parse_mode=ParseMode.HTML,
         reply_markup=with_navigation(),
     )
