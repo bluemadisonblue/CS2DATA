@@ -30,7 +30,8 @@ router = Router(name="inline")
 logger = logging.getLogger(__name__)
 
 _HELP_ARTICLE_ID = "inline-stats-help"
-_VS_SPLIT_RE = re.compile(r"\s+vs\.?\s+", re.IGNORECASE)
+# Split on " vs ", "vs.", " v " (common shorthand). Requires spaces so "player" is not split.
+_VS_SPLIT_RE = re.compile(r"\s+(?:vs\.?|v)\s+", re.IGNORECASE)
 
 
 def _help_article() -> InlineQueryResultArticle:
@@ -38,7 +39,8 @@ def _help_article() -> InlineQueryResultArticle:
         "<b>FACEIT stats in any chat</b>\n\n"
         "Type <code>@YourBotName</code> and a FACEIT nickname, then tap a result to "
         "insert the CS2 dashboard.\n"
-        "Or use <code>@YourBotName nick1 vs nick2</code> for a shareable compare table.\n\n"
+        "Or use <code>@YourBotName nick1 vs nick2</code> (or <code>nick1 v nick2</code>) "
+        "for a shareable compare table.\n\n"
         "<i>Same data as /stats nickname — no registration.</i>"
     )
     return InlineQueryResultArticle(
@@ -112,63 +114,61 @@ async def inline_faceit_stats(inline_query: InlineQuery, faceit) -> None:
         )
         return
 
-    # Inline compare mode: "@bot nick1 vs nick2 [vs nick3 ...]"
+    # Inline compare mode: "@bot nick1 vs nick2 [vs nick3 ...]" (also "nick1 v nick2")
     parsed_vs = _try_parse_vs_query(q)
     if parsed_vs:
         nicks = parsed_vs[:PARTY_MAX_PLAYERS]
-        try:
-            bundles = await asyncio.gather(
-                *(fetch_bundle_for_nickname(faceit, n) for n in nicks),
-            )
-        except FaceitNotFoundError:
+        results = await asyncio.gather(
+            *(fetch_bundle_for_nickname(faceit, n) for n in nicks),
+            return_exceptions=True,
+        )
+
+        bundles: list[dict] = []
+        errors: list[str] = []
+        for nick, res in zip(nicks, results):
+            if isinstance(res, FaceitNotFoundError):
+                errors.append(f"{nick}: not found")
+            elif isinstance(res, FaceitRateLimitError):
+                await inline_query.answer(
+                    [
+                        InlineQueryResultArticle(
+                            id="vs-ratelimit",
+                            title="FACEIT rate limit",
+                            description="Try again in a few seconds",
+                            input_message_content=InputTextMessageContent(
+                                message_text="<b>FACEIT rate limit</b>\nTry again shortly.",
+                                parse_mode="HTML",
+                            ),
+                        )
+                    ],
+                    cache_time=0,
+                    is_personal=True,
+                )
+                return
+            elif isinstance(res, (FaceitUnavailableError, FaceitAPIError)):
+                logger.warning("inline compare player %s: %s", nick, res)
+                errors.append(f"{nick}: API error")
+            elif isinstance(res, Exception):
+                logger.warning("inline compare player %s: %s", nick, res)
+                errors.append(f"{nick}: error")
+            else:
+                bundles.append(res)
+
+        if len(bundles) < 2:
+            err_txt = "\n".join(errors) if errors else "Need at least two valid players."
             await inline_query.answer(
                 [
                     InlineQueryResultArticle(
                         id="vs-notfound",
-                        title="Player not found",
-                        description="One or more nicknames could not be resolved",
+                        title="Could not compare",
+                        description=err_txt[:100],
                         input_message_content=InputTextMessageContent(
-                            message_text=f"<b>Not found on FACEIT</b>\n<code>{html.escape(' vs '.join(nicks))}</code>",
+                            message_text=f"<b>Could not load enough players</b>\n<pre>{html.escape(err_txt)}</pre>",
                             parse_mode="HTML",
                         ),
                     )
                 ],
                 cache_time=5,
-                is_personal=True,
-            )
-            return
-        except FaceitRateLimitError:
-            await inline_query.answer(
-                [
-                    InlineQueryResultArticle(
-                        id="vs-ratelimit",
-                        title="FACEIT rate limit",
-                        description="Try again in a few seconds",
-                        input_message_content=InputTextMessageContent(
-                            message_text="<b>FACEIT rate limit</b>\nTry again shortly.",
-                            parse_mode="HTML",
-                        ),
-                    )
-                ],
-                cache_time=0,
-                is_personal=True,
-            )
-            return
-        except (FaceitUnavailableError, FaceitAPIError) as exc:
-            logger.warning("inline compare failed: %s", exc)
-            await inline_query.answer(
-                [
-                    InlineQueryResultArticle(
-                        id="vs-error",
-                        title="FACEIT temporarily unavailable",
-                        description=str(exc)[:80],
-                        input_message_content=InputTextMessageContent(
-                            message_text="<b>Could not reach FACEIT</b>\nTry again later.",
-                            parse_mode="HTML",
-                        ),
-                    )
-                ],
-                cache_time=0,
                 is_personal=True,
             )
             return
@@ -178,6 +178,8 @@ async def inline_faceit_stats(inline_query: InlineQuery, faceit) -> None:
             f"<i>{html.escape(' vs '.join(nicks))} · CS2 FACEIT</i>\n"
             f"{_party_pre_table(bundles)}"
         )
+        if errors:
+            body += f"\n<i>Skipped: {html.escape(', '.join(errors))}</i>"
         if len(parsed_vs) > PARTY_MAX_PLAYERS:
             body += (
                 f"\n<i>Showing first {PARTY_MAX_PLAYERS} players "
