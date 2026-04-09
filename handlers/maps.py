@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections import Counter, defaultdict
 
 from aiogram import F, Router
@@ -11,7 +10,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
 import database as dbmod
-from config import COOLDOWN_SEC
+from handlers.cooldown import check_cooldown
 from faceit_api import (
     FaceitAPIError,
     FaceitNotFoundError,
@@ -24,18 +23,6 @@ from keyboards.inline import ctx_maps_kb, with_navigation
 from ui_text import bold, code, esc, italic, not_linked_html, section
 
 router = Router(name="maps")
-
-_last: dict[int, float] = {}
-
-
-async def _cooldown(user_id: int) -> str | None:
-    now = time.monotonic()
-    prev = _last.get(user_id)
-    if prev is not None and (now - prev) < COOLDOWN_SEC:
-        left = COOLDOWN_SEC - (now - prev)
-        return f"Wait ~{left:.0f}s before refreshing."
-    _last[user_id] = now
-    return None
 
 
 async def _need_user(
@@ -216,7 +203,7 @@ async def answer_maps_mix(
 
 @router.message(Command("maps"))
 async def cmd_maps(message: Message, command: CommandObject, db, faceit) -> None:
-    if msg := await _cooldown(message.from_user.id):
+    if msg := check_cooldown(message.from_user.id):
         await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
     lim = 40
@@ -233,7 +220,7 @@ async def cb_nav_maps(callback: CallbackQuery, db, faceit) -> None:
     if not callback.message:
         await callback.answer()
         return
-    if msg := await _cooldown(callback.from_user.id):
+    if msg := check_cooldown(callback.from_user.id):
         await callback.answer(msg[:180], show_alert=True)
         return
     await callback.answer()

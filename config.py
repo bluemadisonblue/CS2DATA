@@ -107,6 +107,16 @@ WATCH_POLL_INTERVAL: int = 300
 # Observability (see DEPLOY.md)
 LOG_UPDATES: bool = os.getenv("LOG_UPDATES", "1").strip().lower() in ("1", "true", "yes", "on")
 SENTRY_DSN: str = (os.getenv("SENTRY_DSN") or "").strip()
+SENTRY_ENVIRONMENT: str = (
+    (os.getenv("SENTRY_ENVIRONMENT") or "").strip()
+    or (os.getenv("RAILWAY_ENVIRONMENT_NAME") or "").strip()
+    or "production"
+)
+_raw_traces = os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0") or "0"
+try:
+    SENTRY_TRACES_SAMPLE_RATE: float = max(0.0, min(1.0, float(_raw_traces)))
+except ValueError:
+    SENTRY_TRACES_SAMPLE_RATE = 0.0
 
 # FACEIT CS2 ELO bands: (level, min_elo inclusive, max_elo inclusive). Level 10 is open-ended.
 LEVEL_ELO_RANGES: list[tuple[int, int, int]] = [

@@ -5,32 +5,20 @@ from __future__ import annotations
 import asyncio
 import html as html_mod
 import shlex
-import time
 
 from aiogram import Router
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from config import COOLDOWN_SEC, PARTY_MAX_PLAYERS
+from config import PARTY_MAX_PLAYERS
+from handlers.cooldown import check_cooldown
 from faceit_api import FaceitAPIError, FaceitNotFoundError, FaceitRateLimitError, FaceitUnavailableError
 from .compare import fetch_bundle_for_nickname
 from keyboards.inline import ctx_compare_kb, with_navigation
 from ui_text import bold, code, italic, section
 
 router = Router(name="party")
-
-_last: dict[int, float] = {}
-
-
-async def _cooldown(user_id: int) -> str | None:
-    now = time.monotonic()
-    prev = _last.get(user_id)
-    if prev is not None and (now - prev) < COOLDOWN_SEC:
-        left = COOLDOWN_SEC - (now - prev)
-        return f"Wait ~{left:.0f}s before refreshing."
-    _last[user_id] = now
-    return None
 
 
 def _party_pre_table(bundles: list[dict]) -> str:
@@ -66,7 +54,7 @@ def _party_pre_table(bundles: list[dict]) -> str:
 
 @router.message(Command("party"))
 async def cmd_party(message: Message, command: CommandObject, faceit) -> None:
-    if msg := await _cooldown(message.from_user.id):
+    if msg := check_cooldown(message.from_user.id):
         await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
 

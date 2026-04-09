@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime
 
 from aiogram import Router
@@ -12,25 +11,14 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 import database as dbmod
-from config import COOLDOWN_SEC, WATCH_POLL_INTERVAL
+from config import WATCH_POLL_INTERVAL
+from handlers.cooldown import check_cooldown
 from keyboards.inline import with_navigation
 from ui_text import bold, code, esc, italic, not_linked_html, section, sep
 
 router = Router(name="watch_trend")
 
 logger = logging.getLogger(__name__)
-
-_last_trend: dict[int, float] = {}
-
-
-async def _trend_cooldown(user_id: int) -> str | None:
-    now = time.monotonic()
-    prev = _last_trend.get(user_id)
-    if prev is not None and (now - prev) < COOLDOWN_SEC:
-        left = COOLDOWN_SEC - (now - prev)
-        return f"Wait ~{left:.0f}s before refreshing."
-    _last_trend[user_id] = now
-    return None
 
 
 def _fmt_time(raw: str) -> str:
@@ -107,7 +95,7 @@ async def cmd_watch(message: Message, db) -> None:
 @router.message(Command("trend"))
 async def cmd_trend(message: Message, db) -> None:
     try:
-        if msg := await _trend_cooldown(message.from_user.id):
+        if msg := check_cooldown(message.from_user.id):
             await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
             return
 

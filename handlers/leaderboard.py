@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import html as html_mod
-import time
 
 from aiogram import Router
 from aiogram.enums import ChatAction, ParseMode
@@ -11,7 +11,8 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 import database as dbmod
-from config import COOLDOWN_SEC, LEADERBOARD_MAX_USERS, level_tier_emoji
+from config import LEADERBOARD_MAX_USERS, level_tier_emoji
+from handlers.cooldown import check_cooldown
 from faceit_api import (
     FaceitAPIError,
     FaceitNotFoundError,
@@ -25,22 +26,28 @@ from ui_text import bold, code, italic, section, sep
 
 router = Router(name="leaderboard")
 
-_last: dict[int, float] = {}
+_FETCH_SEM = asyncio.Semaphore(8)
 
 
-async def _cooldown(user_id: int) -> str | None:
-    now = time.monotonic()
-    prev = _last.get(user_id)
-    if prev is not None and (now - prev) < COOLDOWN_SEC:
-        left = COOLDOWN_SEC - (now - prev)
-        return f"Wait ~{left:.0f}s before refreshing."
-    _last[user_id] = now
-    return None
+async def _fetch_lb_row(
+    faceit, u: dict
+) -> tuple[int, str, int, str]:
+    nick_db = u.get("faceit_nickname") or "?"
+    async with _FETCH_SEM:
+        try:
+            p = await faceit.get_player_by_id(u["faceit_player_id"])
+        except FaceitNotFoundError:
+            return (0, nick_db, 0, "❔")
+    g = extract_cs2_game(p) or {}
+    elo = int(g.get("faceit_elo") or 0)
+    level = int(g.get("skill_level") or 0)
+    tier = level_tier_emoji(level) if level else "❔"
+    return (elo, str(p.get("nickname") or nick_db), level, tier)
 
 
 @router.message(Command("leaderboard"))
 async def cmd_leaderboard(message: Message, db, faceit) -> None:
-    if msg := await _cooldown(message.from_user.id):
+    if msg := check_cooldown(message.from_user.id):
         await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
 
@@ -61,29 +68,23 @@ async def cmd_leaderboard(message: Message, db, faceit) -> None:
 
     loading = await message.answer("⏳ Fetching ELO for registered players…")
 
+    results = await asyncio.gather(
+        *[_fetch_lb_row(faceit, u) for u in users],
+        return_exceptions=True,
+    )
+
     rows: list[tuple[int, str, int, str]] = []
-    for u in users:
-        pid = u["faceit_player_id"]
-        nick_db = u.get("faceit_nickname") or "?"
-        try:
-            p = await faceit.get_player_by_id(pid)
-        except FaceitNotFoundError:
-            rows.append((0, nick_db, 0, "❔"))
-            continue
-        except (FaceitUnavailableError, FaceitRateLimitError, FaceitAPIError) as exc:
+    for res in results:
+        if isinstance(res, (FaceitUnavailableError, FaceitRateLimitError, FaceitAPIError)):
             await loading.delete()
             await message.answer(
-                html_faceit_transport_error(exc),
+                html_faceit_transport_error(res),
                 parse_mode=ParseMode.HTML,
                 reply_markup=with_navigation(),
             )
             return
-        g = extract_cs2_game(p) or {}
-        elo = int(g.get("faceit_elo") or 0)
-        level = int(g.get("skill_level") or 0)
-        tier = level_tier_emoji(level) if level else "❔"
-        disp = str(p.get("nickname") or nick_db)
-        rows.append((elo, disp, level, tier))
+        elif isinstance(res, tuple):
+            rows.append(res)
 
     await loading.delete()
 

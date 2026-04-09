@@ -67,6 +67,9 @@ async def init_db(db_path: str = DB_PATH) -> None:
     # Parent dir and writability are validated in config._compute_db_path(); do not mkdir here
     # (avoids PermissionError on /data when env points at Docker-only paths).
     async with aiosqlite.connect(db_path) as db:
+        # WAL mode gives better concurrent read performance with aiosqlite.
+        await db.execute("PRAGMA journal_mode = WAL")
+        await db.execute("PRAGMA synchronous = NORMAL")
         await db.execute(_SCHEMA_USERS)
         await db.execute(_SCHEMA_ELO_SNAPSHOTS)
         await db.execute(_SCHEMA_FSM)
@@ -100,7 +103,6 @@ async def list_telegram_ids_by_faceit_player_id(
     db: aiosqlite.Connection, faceit_player_id: str
 ) -> list[int]:
     """Reverse lookup: Telegram accounts linked to a FACEIT player (for admin / leaderboards)."""
-    db.row_factory = None
     async with db.execute(
         "SELECT telegram_id FROM users WHERE faceit_player_id = ?",
         (faceit_player_id,),

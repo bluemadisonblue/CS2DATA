@@ -9,10 +9,9 @@ from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message, URLInputFile
 
-import time
-
 import database as dbmod
-from config import COOLDOWN_SEC, level_tier_emoji
+from config import level_tier_emoji
+from handlers.cooldown import check_cooldown
 from faceit_api import (
     FaceitAPIError,
     FaceitNotFoundError,
@@ -31,17 +30,6 @@ router = Router(name="profile")
 logger = logging.getLogger(__name__)
 
 _CAPTION_MAX = 1024
-_last: dict[int, float] = {}
-
-
-async def _cooldown(user_id: int) -> str | None:
-    now = time.monotonic()
-    prev = _last.get(user_id)
-    if prev is not None and (now - prev) < COOLDOWN_SEC:
-        left = COOLDOWN_SEC - (now - prev)
-        return f"Wait ~{left:.0f}s before refreshing."
-    _last[user_id] = now
-    return None
 
 
 async def answer_profile_card(
@@ -139,7 +127,7 @@ async def answer_profile_card(
 
 @router.message(Command("profile"))
 async def cmd_profile(message: Message, db, faceit) -> None:
-    if msg := await _cooldown(message.from_user.id):
+    if msg := check_cooldown(message.from_user.id):
         await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
     await answer_profile_card(message, db, faceit)
@@ -150,7 +138,7 @@ async def cb_nav_profile(callback: CallbackQuery, db, faceit) -> None:
     if not callback.message:
         await callback.answer()
         return
-    if msg := await _cooldown(callback.from_user.id):
+    if msg := check_cooldown(callback.from_user.id):
         await callback.answer(msg[:180], show_alert=True)
         return
     await callback.answer()

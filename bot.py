@@ -24,6 +24,8 @@ from config import (
     FACEIT_API_KEY,
     MAX_CACHE_SIZE,
     SENTRY_DSN,
+    SENTRY_ENVIRONMENT,
+    SENTRY_TRACES_SAMPLE_RATE,
     WATCH_POLL_INTERVAL,
 )
 from faceit_api import FaceitAPI, FaceitAPIError, parse_match_stats_row
@@ -42,23 +44,13 @@ def _init_sentry() -> None:
     import sentry_sdk
 
     release = os.getenv("GIT_SHA") or os.getenv("SOURCE_VERSION") or BOT_VERSION
-    env_name = (
-        os.getenv("SENTRY_ENVIRONMENT")
-        or os.getenv("RAILWAY_ENVIRONMENT_NAME")
-        or "production"
-    )
-    raw_rate = os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0") or "0"
-    try:
-        traces = max(0.0, min(1.0, float(raw_rate)))
-    except ValueError:
-        traces = 0.0
     sentry_sdk.init(
         dsn=SENTRY_DSN,
         release=release,
-        environment=env_name,
-        traces_sample_rate=traces,
+        environment=SENTRY_ENVIRONMENT,
+        traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
     )
-    logger.info("Sentry enabled (environment=%s release=%s).", env_name, release)
+    logger.info("Sentry enabled (environment=%s release=%s).", SENTRY_ENVIRONMENT, release)
 
 
 def _user_id_from_update(update: Update) -> int | None:
@@ -97,60 +89,80 @@ class FaceitInjectMiddleware(BaseMiddleware):
 # Background watch loop
 # ---------------------------------------------------------------------------
 
+_WATCH_SEM = asyncio.Semaphore(10)
+
+
+async def _check_one_watcher(bot: Bot, faceit: FaceitAPI, user: dict) -> None:
+    """Check a single watching user for a new match and notify them if found."""
+    tid = user["telegram_id"]
+    pid = user["faceit_player_id"]
+    last_mid = user.get("last_match_id")
+
+    async with _WATCH_SEM:
+        try:
+            raw = await faceit.get_player_match_stats(pid, limit=1, offset=0)
+        except FaceitAPIError:
+            return
+
+    items = (raw or {}).get("items") or []
+    if not items or not isinstance(items[0], dict):
+        return
+
+    stats = items[0].get("stats")
+    if not isinstance(stats, dict):
+        return
+
+    row = parse_match_stats_row(stats)
+    mid = row.get("match_id")
+    if not mid:
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        if last_mid is None:
+            await database.update_last_match_id(db, tid, mid)
+            return
+
+        if mid == last_mid:
+            return
+
+        await database.update_last_match_id(db, tid, mid)
+
+    wl = "✅ Win" if row["won"] is True else ("❌ Loss" if row["won"] is False else "Match ended")
+    map_name = row.get("map") or "—"
+    kd_val = row.get("kd")
+    kd_s = f"{kd_val:.2f}" if kd_val is not None else "—"
+    kills_val = row.get("kills")
+    kills_s = str(int(kills_val)) if kills_val is not None else "—"
+    hs_val = row.get("hs_pct")
+    hs_s = f"{hs_val:.0f}%" if hs_val is not None else "—"
+
+    msg = (
+        f"🔔 <b>New match!</b>\n"
+        f"{wl} · <b>{map_name}</b>\n"
+        f"K/D <code>{kd_s}</code>  K <code>{kills_s}</code>  HS <code>{hs_s}</code>"
+    )
+    try:
+        await bot.send_message(tid, msg, parse_mode="HTML")
+    except TelegramForbiddenError:
+        logger.info("User %s blocked the bot — disabling watch.", tid)
+        async with aiosqlite.connect(DB_PATH) as db:
+            await database.set_watching(db, tid, False)
+    except Exception as exc:
+        logger.warning("Failed to notify user %s: %s", tid, exc)
+
+
 async def _check_all_watchers(bot: Bot, faceit: FaceitAPI) -> None:
     """Check every watching user for a new match and notify them."""
     async with aiosqlite.connect(DB_PATH) as db:
         users = await database.get_watching_users(db)
 
-        for user in users:
-            tid = user["telegram_id"]
-            pid = user["faceit_player_id"]
-            last_mid = user.get("last_match_id")
+    if not users:
+        return
 
-            try:
-                raw = await faceit.get_player_match_stats(pid, limit=1, offset=0)
-            except FaceitAPIError:
-                continue
-
-            items = (raw or {}).get("items") or []
-            if not items or not isinstance(items[0], dict):
-                continue
-
-            stats = items[0].get("stats")
-            if not isinstance(stats, dict):
-                continue
-
-            row = parse_match_stats_row(stats)
-            mid = row.get("match_id")
-            if not mid:
-                continue
-
-            if last_mid is None:
-                await database.update_last_match_id(db, tid, mid)
-                continue
-
-            if mid == last_mid:
-                continue
-
-            await database.update_last_match_id(db, tid, mid)
-
-            wl = "✅ Win" if row["won"] is True else ("❌ Loss" if row["won"] is False else "Match ended")
-            map_name = row.get("map") or "—"
-            kd_val = row.get("kd")
-            kd_s = f"{kd_val:.2f}" if kd_val is not None else "—"
-
-            msg = (
-                f"🔔 <b>New match!</b>\n"
-                f"{wl} · <b>{map_name}</b>\n"
-                f"K/D <code>{kd_s}</code>"
-            )
-            try:
-                await bot.send_message(tid, msg, parse_mode="HTML")
-            except TelegramForbiddenError:
-                logger.info("User %s blocked the bot — disabling watch.", tid)
-                await database.set_watching(db, tid, False)
-            except Exception as exc:
-                logger.warning("Failed to notify user %s: %s", tid, exc)
+    await asyncio.gather(
+        *[_check_one_watcher(bot, faceit, user) for user in users],
+        return_exceptions=True,
+    )
 
 
 async def watch_loop(bot: Bot, faceit: FaceitAPI) -> None:

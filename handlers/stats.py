@@ -6,7 +6,6 @@ import asyncio
 import html
 import logging
 import re
-import time
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction, ParseMode
@@ -14,7 +13,8 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
 import database as dbmod
-from config import COOLDOWN_SEC, MATCHES_PAGE_SIZE
+from config import MATCHES_PAGE_SIZE
+from handlers.cooldown import check_cooldown
 from faceit_api import (
     FaceitAPIError,
     FaceitNotFoundError,
@@ -44,18 +44,6 @@ from ui_text import bold, code, esc, italic, not_linked_html, section
 router = Router(name="stats")
 
 logger = logging.getLogger(__name__)
-
-_last_heavy: dict[int, float] = {}
-
-
-async def _cooldown_block(user_id: int) -> str | None:
-    now = time.monotonic()
-    prev = _last_heavy.get(user_id)
-    if prev is not None and (now - prev) < COOLDOWN_SEC:
-        left = COOLDOWN_SEC - (now - prev)
-        return f"Wait ~{left:.0f}s before refreshing."
-    _last_heavy[user_id] = now
-    return None
 
 
 def _roster_pre_block(rows: list[dict], my_pid: str) -> str:
@@ -404,7 +392,7 @@ async def answer_matches_list(
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, command: CommandObject, db, faceit) -> None:
-    if msg := await _cooldown_block(message.from_user.id):
+    if msg := check_cooldown(message.from_user.id):
         await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
     nickname = (command.args or "").strip() or None
@@ -413,7 +401,7 @@ async def cmd_stats(message: Message, command: CommandObject, db, faceit) -> Non
 
 @router.message(Command("matches"))
 async def cmd_matches(message: Message, command: CommandObject, db, faceit) -> None:
-    if msg := await _cooldown_block(message.from_user.id):
+    if msg := check_cooldown(message.from_user.id):
         await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
     limit = 10
@@ -439,7 +427,7 @@ async def cmd_match(message: Message, command: CommandObject, db, faceit) -> Non
             reply_markup=with_navigation(),
         )
         return
-    if msg := await _cooldown_block(message.from_user.id):
+    if msg := check_cooldown(message.from_user.id):
         await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
     await send_match_scoreboard(message, db, faceit, mid, message.from_user.id)
@@ -458,7 +446,7 @@ async def cb_match_board(callback: CallbackQuery, db, faceit) -> None:
     if not mid or not _MATCH_ID_RE.match(mid):
         await callback.answer("Invalid match id", show_alert=True)
         return
-    if msg := await _cooldown_block(callback.from_user.id):
+    if msg := check_cooldown(callback.from_user.id):
         await callback.answer(msg[:180], show_alert=True)
         return
     await callback.answer()
@@ -481,7 +469,7 @@ async def cb_matches_page(callback: CallbackQuery, db, faceit) -> None:
     except (IndexError, ValueError):
         await callback.answer("Invalid page", show_alert=True)
         return
-    if msg := await _cooldown_block(callback.from_user.id):
+    if msg := check_cooldown(callback.from_user.id):
         await callback.answer(msg[:180], show_alert=True)
         return
     await callback.answer()
@@ -505,7 +493,7 @@ async def cb_nav_stats(callback: CallbackQuery, db, faceit) -> None:
     if not callback.message:
         await callback.answer()
         return
-    if msg := await _cooldown_block(callback.from_user.id):
+    if msg := check_cooldown(callback.from_user.id):
         await callback.answer(msg[:180], show_alert=True)
         return
     await callback.answer()
@@ -521,7 +509,7 @@ async def cb_nav_matches(callback: CallbackQuery, db, faceit) -> None:
     if not callback.message:
         await callback.answer()
         return
-    if msg := await _cooldown_block(callback.from_user.id):
+    if msg := check_cooldown(callback.from_user.id):
         await callback.answer(msg[:180], show_alert=True)
         return
     await callback.answer()

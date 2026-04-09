@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import html
-import time
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction, ParseMode
@@ -12,7 +11,8 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
 import database as dbmod
-from config import COOLDOWN_SEC, level_tier_emoji
+from config import level_tier_emoji
+from handlers.cooldown import check_cooldown
 from faceit_api import (
     FaceitAPIError,
     FaceitNotFoundError,
@@ -28,18 +28,6 @@ from keyboards.inline import ctx_compare_kb, with_navigation
 from ui_text import bold, code, italic, not_linked_html, section
 
 router = Router(name="compare")
-
-_last: dict[int, float] = {}
-
-
-async def _cooldown(user_id: int) -> str | None:
-    now = time.monotonic()
-    prev = _last.get(user_id)
-    if prev is not None and (now - prev) < COOLDOWN_SEC:
-        left = COOLDOWN_SEC - (now - prev)
-        return f"Wait ~{left:.0f}s before refreshing."
-    _last[user_id] = now
-    return None
 
 
 async def _fetch_bundle(faceit, player_id: str) -> dict:
@@ -197,7 +185,7 @@ def _compare_table(you: dict, opp: dict) -> str:
 
 @router.message(Command("compare"))
 async def cmd_compare(message: Message, command: CommandObject, db, faceit) -> None:
-    if msg := await _cooldown(message.from_user.id):
+    if msg := check_cooldown(message.from_user.id):
         await message.answer(msg, parse_mode=ParseMode.HTML, reply_markup=with_navigation())
         return
 
