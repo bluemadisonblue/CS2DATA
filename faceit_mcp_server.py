@@ -42,7 +42,7 @@ from mcp.server.fastmcp import FastMCP
 
 from cache import TTLCache
 from config import DB_PATH, FACEIT_API_KEY
-from database import get_watching_users  # reuse schema helpers
+from database import init_db
 from faceit_api import (
     FaceitAPI,
     FaceitAPIError,
@@ -380,10 +380,11 @@ async def _amain() -> None:
     global _http, _faceit
     if not FACEIT_API_KEY:
         raise SystemExit("FACEIT_API_KEY is not set. Add it to your .env or pass it as an env var.")
+    await init_db()
     async with aiohttp.ClientSession() as http:
         _http = http
         _faceit = FaceitAPI(http, FACEIT_API_KEY, cache=TTLCache(maxsize=500))
-        await mcp.run_async(transport="stdio")
+        await mcp.run_stdio_async()
 
 
 if __name__ == "__main__":
