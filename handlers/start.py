@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, Message
 from config import BOT_VERSION, COOLDOWN_SEC, MATCHES_PAGE_SIZE, PARTY_MAX_PLAYERS
 from keyboards.inline import main_menu_kb
 from ui_text import bold, bullet_line, code, esc, italic, link, section, sep, tip_item
+import referral_state
 
 router = Router(name="start")
 
@@ -75,6 +76,8 @@ HELP_HTML = "\n".join(
         bullet_line(f"{code('/maps')} or {code('/maps 50')} — recent map frequency"),
         bullet_line(f"{code('/trend')} — ELO history over time"),
         bullet_line(f"{code('/watch')} — toggle new-match alerts"),
+        bullet_line(f"{code('/card')} or {code('/card nickname')} — shareable stats image"),
+        bullet_line(f"{code('/referral')} — your invite link & referral count"),
         bullet_line(f"{code('/version')} — running bot version/build"),
         "",
         bullet_line(f"{code('/about')} — version & data source"),
@@ -149,6 +152,7 @@ ABOUT_HTML = "\n".join(
         f"{bold('Contact')} {code('@tyuiqak')} · {code('tyuiqak@gmail.com')}",
         "",
         sep(20),
+        italic("1.5: /card share image, /referral invite system."),
         italic("1.4: inline @bot stats, /leaderboard, /party, shared stats_format module."),
     ]
 )
@@ -156,7 +160,15 @@ ABOUT_HTML = "\n".join(
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, command: CommandObject) -> None:
-    payload = (command.args or "").strip().lower()
+    payload = (command.args or "").strip()
+
+    # Referral deep-link: /start ref_<referrer_telegram_id>
+    if payload.lower().startswith("ref_"):
+        referrer_raw = payload[4:]
+        if referrer_raw.isdigit():
+            referral_state.set_pending(message.from_user.id, int(referrer_raw))
+
+    payload = payload.lower()
     if payload == "register":
         await message.answer(
             "\n".join(

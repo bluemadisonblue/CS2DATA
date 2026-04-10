@@ -12,6 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 import database as dbmod
+import referral_state
 from faceit_api import (
     FaceitAPIError,
     FaceitNotFoundError,
@@ -120,11 +121,25 @@ async def cmd_register(
             return
 
         await dbmod.upsert_user(db, tid, resolved_nick, pid)
+
+        # Credit referrer if this is a brand-new user arriving via a referral link
+        referrer_id = referral_state.consume_pending(tid)
+        referral_note = ""
+        if referrer_id:
+            already = await dbmod.has_been_referred(db, tid)
+            if not already:
+                credited = await dbmod.add_referral(db, referrer_id, tid)
+                if credited:
+                    referral_note = (
+                        f"\n\n👥 {italic('You were referred — your friend just earned a referral point!')}"
+                    )
+
         await message.answer(
             f"{bold('You are set!')}\n"
             f"Linked as {code(resolved_nick)}.\n"
             f"{italic('Change nickname anytime:')} {code('/register new_nickname')}\n"
-            f"Try {code('/stats')} or tap ⭐ My stats below.",
+            f"Try {code('/stats')} or tap ⭐ My stats below."
+            + referral_note,
             parse_mode=ParseMode.HTML,
             reply_markup=register_success_kb(),
         )

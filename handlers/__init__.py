@@ -6,6 +6,7 @@ from aiogram import Router
 def setup_routers() -> Router:
     root = Router()
     from . import (
+        card,
         compare,
         inline_mode,
         leaderboard,
@@ -13,6 +14,7 @@ def setup_routers() -> Router:
         party,
         profile,
         rank,
+        referral,
         register,
         start,
         stats,
@@ -22,6 +24,8 @@ def setup_routers() -> Router:
     root.include_router(start.router)
     root.include_router(inline_mode.router)
     root.include_router(register.router)
+    root.include_router(card.router)
+    root.include_router(referral.router)
     root.include_router(stats.router)
     root.include_router(maps.router)
     root.include_router(profile.router)

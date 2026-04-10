@@ -201,6 +201,30 @@ def register_confirm_kb() -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def card_share_kb(nickname: str) -> InlineKeyboardMarkup:
+    """Keyboard shown under the share card photo — inline query to generate for another player."""
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(
+            text="🔎 Look up another player",
+            switch_inline_query_current_chat=nickname,
+        )
+    )
+    b.row(_BTN_STATS, _BTN_HOME)
+    return b.as_markup()
+
+
+def referral_kb(ref_url: str) -> InlineKeyboardMarkup:
+    """Shown under /referral — share button + stats shortcut."""
+    import urllib.parse
+    encoded = urllib.parse.quote(ref_url, safe="")
+    share_url = f"https://t.me/share/url?url={encoded}&text=Track%20your%20CS2%20FACEIT%20stats!"
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="📤 Share my invite link", url=share_url))
+    b.row(_BTN_STATS, _BTN_HOME)
+    return b.as_markup()
+
+
 def unlink_confirm_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.row(

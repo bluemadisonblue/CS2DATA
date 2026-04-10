@@ -45,10 +45,20 @@ CREATE TABLE IF NOT EXISTS fsm_state (
 );
 """
 
+_SCHEMA_REFERRALS = """
+CREATE TABLE IF NOT EXISTS referrals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    referrer_id   INTEGER NOT NULL,
+    referred_id   INTEGER NOT NULL UNIQUE,
+    credited_at   TEXT    DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 _INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_elo_snapshots_tid ON elo_snapshots(telegram_id, recorded_at);",
     "CREATE INDEX IF NOT EXISTS idx_users_watching ON users(watching);",
     "CREATE INDEX IF NOT EXISTS idx_users_player_id ON users(faceit_player_id);",
+    "CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id);",
 ]
 
 # Columns added after initial deploy; ALTER TABLE is idempotent via try/except.
@@ -73,6 +83,7 @@ async def init_db(db_path: str = DB_PATH) -> None:
         await db.execute(_SCHEMA_USERS)
         await db.execute(_SCHEMA_ELO_SNAPSHOTS)
         await db.execute(_SCHEMA_FSM)
+        await db.execute(_SCHEMA_REFERRALS)
         for idx_sql in _INDEXES:
             await db.execute(idx_sql)
         # Safe migrations for existing databases
@@ -236,3 +247,57 @@ async def get_elo_snapshots(
         rows = await cur.fetchall()
     # Return oldest-first for chart display
     return [dict(r) for r in reversed(rows)]
+
+
+# ---------------------------------------------------------------------------
+# Referral queries
+# ---------------------------------------------------------------------------
+
+async def has_been_referred(db: aiosqlite.Connection, referred_id: int) -> bool:
+    """True if this user has already been credited as a referral."""
+    async with db.execute(
+        "SELECT 1 FROM referrals WHERE referred_id = ? LIMIT 1", (referred_id,)
+    ) as cur:
+        return await cur.fetchone() is not None
+
+
+async def add_referral(
+    db: aiosqlite.Connection, referrer_id: int, referred_id: int
+) -> bool:
+    """Record a referral. Returns True if successfully inserted, False if already exists."""
+    try:
+        await db.execute(
+            "INSERT INTO referrals (referrer_id, referred_id) VALUES (?, ?)",
+            (referrer_id, referred_id),
+        )
+        await db.commit()
+        return True
+    except Exception:
+        return False  # UNIQUE constraint — already recorded
+
+
+async def get_referral_count(db: aiosqlite.Connection, referrer_id: int) -> int:
+    """Number of users this person has successfully referred."""
+    async with db.execute(
+        "SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (referrer_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def get_referral_stats(
+    db: aiosqlite.Connection, referrer_id: int
+) -> dict[str, Any]:
+    """Count of referrals + timestamp of the most recent one."""
+    db.row_factory = aiosqlite.Row
+    async with db.execute(
+        """
+        SELECT COUNT(*) AS total, MAX(credited_at) AS last_at
+        FROM referrals WHERE referrer_id = ?
+        """,
+        (referrer_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return {"total": 0, "last_at": None}
+    return {"total": int(row["total"]), "last_at": row["last_at"]}
