@@ -11,7 +11,6 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
 import database as dbmod
-from config import level_tier_emoji
 from handlers.cooldown import check_cooldown
 from faceit_api import (
     FaceitAPIError,
@@ -141,9 +140,6 @@ def _win_marker(a: float | None, b: float | None, higher_is_better: bool = True)
 
 
 def _compare_table(you: dict, opp: dict) -> str:
-    y_tier = level_tier_emoji(you["level"]) if you["level"] else ""
-    o_tier = level_tier_emoji(opp["level"]) if opp["level"] else ""
-
     # ELO comparison (higher = better)
     elo_ym, elo_om = _win_marker(float(you["elo"]), float(opp["elo"]))
     # Level comparison (higher = better)
@@ -162,8 +158,8 @@ def _compare_table(you: dict, opp: dict) -> str:
 
     y_elo = str(you["elo"]) + elo_ym
     o_elo = str(opp["elo"]) + elo_om
-    y_lvl = y_tier + str(you["level"]) + lvl_ym
-    o_lvl = o_tier + str(opp["level"]) + lvl_om
+    y_lvl = str(you["level"]) + lvl_ym
+    o_lvl = str(opp["level"]) + lvl_om
 
     rows = [
         f"{'Stat':<11} {'You':<18} {'Opponent':<18}",
